@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>cn.com.shuchang.springboot.study</groupId>
+    <artifactId>study-parent</artifactId>
+    <packaging>pom</packaging>
+    <version>1.0-SNAPSHOT</version>
+    <modules>
+        <module>springboot-listener</module>
+    </modules>
+
+    <properties>
+        <java.version>1.8</java.version>
+        <springboot.version>2.5.6</springboot.version>
+    </properties>
+
+    <!--方便子模块复用，类似于继承，最顶层的模块parent中，不能引用properties属性，子模块可以-->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>2.5.6</version>
+    </parent>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>${logback.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-core</artifactId>
+            <version>${logback.version}</version>
+        </dependency>
+    </dependencies>
+
+</project>
