@@ -11,6 +11,7 @@
     <modules>
         <module>springboot-listener</module>
         <module>springboot-environment-postprocessor</module>
+        <module>springboot-environment-postprocessor-profiles</module>
     </modules>
 
     <properties>
