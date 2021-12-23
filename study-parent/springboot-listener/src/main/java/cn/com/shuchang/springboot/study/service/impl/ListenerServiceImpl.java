@@ -32,6 +32,7 @@ public class ListenerServiceImpl implements ListenerService, ApplicationContextA
     }
 
     public void publishEvent() {
+        //ApplicationContext实现了ApplicationEventPublisher接口，SpringBoot可以通过ApplicationEventPublisher来发布事件
         applicationContext.publishEvent(new SecondEvent(this, "invoke SecondEvent"));
         applicationContext.publishEvent(new ThirdEvent(this, "invoke ThirdEvent"));
         applicationContext.publishEvent(new FourthEvent(this, "invoke FourthEvent"));

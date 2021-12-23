@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
  * @version 1.0
  * @date 2021/12/20 16:23
  */
+// TODO: 2.自定义监听器通过Component组件的形式装载的Bean工厂
 @Component
 public class SecondListener implements ApplicationListener<SecondEvent> {
     @Override

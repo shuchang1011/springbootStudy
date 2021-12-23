@@ -310,3 +310,35 @@ org.springframework.boot.context.event.EventPublishingRunListener
 
 因为我们的事件类型为`ApplicationEvent`，所以会执行`onApplicationStartedEvent((ApplicationStartedEvent) event);`。springBoot会在运行过程中的不同阶段，发送各种事件，来执行对应监听器的对应方法（不同的监听器实现不同的监听事件）。大同小异，别的监听器执行流程这里不再赘述，后面会有单独的详解。
 继续后面的流程。
+
+## 3）自定义监听器实现
+
+在第一小节，获取监听器`getRunListeners`中，可以看到，springboot加载监听器是通过读取spring.factories的`org.springframework.boot.SpringApplicationRunListener`的配置来决定加载哪些监听器的。
+
+因此，我们可以通过自定义实现一个监听器，然后在spring.factories中加入指定的监听器。在构建监听器的过程中，需要实现`ApplicationListener`接口，`ApplicationListener`是springboot中监听器的一个声明接口。或者实现其继承类`SmartApplicationListener`。
+
+它还提供了`supportsEventType(Class<? extends ApplicationEvent>)`方法，方便用户对于监听事件类型进行过滤。
+
+<img src="C:\Users\shuchang\AppData\Roaming\Typora\typora-user-images\image-20211223151908164.png" style="zoom:50%;" />
+
+同时，还可以自定义事件。springboot自身定义了生命周期中各个阶段的的触发事件，其统一继承了ApplicationEvent类，在触发事件调用`onApplicationStartedEvent(ApplicationStartedEvent event)`，也是获取ApplicationEvent类型的事件。因此，我们在自定义事件时，也需要继承实现ApplicationEvent。
+
+![SpringApplicationEvent类图](C:\Users\shuchang\Desktop\SpringApplicationEvent类图.png)
+
+```
+实现方式主要有四种：
+1.在初始化启动的时候，手动装载listener
+2.自定义监听器通过Component组件的形式装载的Bean工厂
+3.在resources目录下添加META-INF/spring.factories文件，并在org.springframework.context.ApplicationListener属性中添加自定义监听器
+4.实现SmartApplicationListener，该接口继承了ApplicationListener，且添加了supportsEventType方法，可以对触发事件进行过滤
+```
+
+
+
+
+
+
+
+
+
+## 4）异步事件机制实现

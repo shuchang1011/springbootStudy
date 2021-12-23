@@ -18,6 +18,8 @@ import org.springframework.context.event.SmartApplicationListener;
  * @version 1.0
  * @date 2021/12/20 17:10
  */
+//TODO:4.实现SmartApplicationListener，该接口继承了ApplicationListener，
+// 且添加了supportsEventType方法，可以对触发事件进行过滤，注意：同样需要配置在spring.factories中或@Component注册成组件
 public class FourthListener implements SmartApplicationListener {
 
     private static final Logger logger = LoggerFactory.getLogger(FourthListener.class);
