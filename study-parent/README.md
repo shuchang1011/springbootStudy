@@ -319,11 +319,13 @@ org.springframework.boot.context.event.EventPublishingRunListener
 
 它还提供了`supportsEventType(Class<? extends ApplicationEvent>)`方法，方便用户对于监听事件类型进行过滤。
 
-<img src="C:\Users\shuchang\AppData\Roaming\Typora\typora-user-images\image-20211223151908164.png" style="zoom:50%;" />
+![SpringApplicationEvent类图](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211223151908164.png)
 
 同时，还可以自定义事件。springboot自身定义了生命周期中各个阶段的的触发事件，其统一继承了ApplicationEvent类，在触发事件调用`onApplicationStartedEvent(ApplicationStartedEvent event)`，也是获取ApplicationEvent类型的事件。因此，我们在自定义事件时，也需要继承实现`ApplicationEvent`。
 
-![SpringApplicationEvent类图](C:\Users\shuchang\Desktop\SpringApplicationEvent类图.png)
+<img src="https://raw.githubusercontent.com/shuchang1011/images/main/img/SpringApplicationEvent%E7%B1%BB%E5%9B%BE.png" style="zoom:50%;" />
+
+------
 
 **实现步骤如下：**
 
@@ -337,7 +339,7 @@ org.springframework.boot.context.event.EventPublishingRunListener
 
 具体实现见代码模块
 
-[springboot-listener]: https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-listener
+[springboot-listener]: https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-listener	"springboot-listener"
 
 
 
