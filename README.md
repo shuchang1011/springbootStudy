@@ -339,8 +339,82 @@ org.springframework.boot.context.event.EventPublishingRunListener
 
 具体实现见代码模块
 
-[springboot-listener]: https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-listener	"springboot-listener"
-
-
+[springboot-listener](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-listener)
 
 ## 4）异步事件机制实现
+
+在某些业务完成后，用户需要推送相关通知，这时，可以通过异步事件监听的机制来达到这一目的。而Spring提供的事件机制，默认是**同步**的。如果想要开启异步事件机制，Springboot也提供了相应的拓展方式，主要有以下两种：`配置applicationEventMulticaster的线程池`和`异步注解@Async`
+
+### 1.配置applicationEventMulticaster的线程池
+
+**实现原理**
+
+Spring提供的事件机制，默认是**同步**的。如果想要使用异步事件监听，可以自己实现`ApplicationEventMulticaster`接口，并在Spring容器中注册id为`applicationEventMulticaster`的Bean ， 设置 executor 。
+
+Spring会遍历所有的ApplicationListener， 如果 taskExecutor 不为空，就会开启异步线程执行。
+
+![image-20211223163747848](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211223163747848.png)
+
+------
+
+**实现步骤**
+
+```
+1.构建自定义异步监听事件，继承ApplicationEvent父类
+2.构建自定义异步监听器，实现SmartApplicationListener
+3.通过@Component注解或者在spring.factories文件中配置当前AsyncListener，将该异步监听器注册到bean容器中
+4.通过在初始化时配置名称为applicationEventMulticaster的bean的线程池，使得事件触发后，能多线程调用监听器的事件方法
+```
+
+具体实现见代码模块
+
+[](springboot-listener-async)的method1模块
+
+------
+
+**源码解析**
+Spring默认的事件广播器 `SimpleApplicationEventMulticaster#multicastEvent`
+我们分析一下 `applicationContext.publishEvent(new AsyncEvent(Object source, String msg));` 最终会调用到
+
+`org.springframework.context.event.SimpleApplicationEventMulticaster#multicastEvent(org.springframework.context.ApplicationEvent, org.springframework.core.ResolvableType)`
+![image-20211224101917211](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224101917211.png)
+
+-----------------------------------
+在传播事件的时候，会去判断是否设置了线程池，从而决定是否采用异步处理事件
+
+![image-20211224102237104](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224102237104.png)
+
+![image-20211224102603272](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224102603272.png)
+
+![image-20211224102536935](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224102536935.png)
+
+所以说，只要在实例化SimpleApplicationEventMulticaster的时候 set属性值就可以了。
+
+那么，问题来了，何时去设置这个属性呢？在spring容器进行refresh的阶段会触发`initApplicationEventMulticaster`操作，在这个方法内会去IOC容器上获取applicationEventMulticaster的bean对象，并重新赋值给上下文环境中的事件多播器对象。
+
+![image-20211224103611680](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224103611680.png)
+
+![image-20211224103642912](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224103642912.png)
+
+综上所述，Spring会先从容器中找 bean name 为 `applicationEventMulticaster` 的 bean，so问题就简单了，我们只要自定义个 bean name 为 `applicationEventMulticaster` 的 bean，并给其属性 taskExecutor 赋上自定义的线程池即可，这个时候就能实现异步事件处理了 .
+
+------
+
+
+
+### 2.异步注解@Async
+
+**实现原理**
+
+主要是基于springboot自身提供的@Async注解。通过@EnableAsync开启异步执行功能后，springboot会使用默认设置的线程池去执行异步操作；然后，在需要进行异步处理的方法上声明@Async注解，也就是在我们的自定义监听器的事件触发函数`onApplicationEvent`上声明@Async；这样子，就能在事件触发时，异步调用`onApplicationEvent`的函数实现，而不影响主线程的使用了。
+
+------
+
+**实现步骤**
+
+```
+1.构建自定义异步监听事件，继承ApplicationEvent父类
+2.构建自定义异步监听器，实现SmartApplicationListener
+3.通过@Component注解或者在spring.factories文件中配置当前AsyncListener，将该异步监听器注册到bean容器中
+4.使用springboot的异步注解@Async。使用前提：需在启动类上使用@EnableAsync开启异步执行的功能。然后将@Async修饰在需要异步执行的方法上，这里也就对应着listener中的onApplicationEvent方法。springboot使用的是默认的线程池，可以通过创建一个配置类，实现AsyncConfigurer的getExecutor方法，来生成指定的线程池
+```

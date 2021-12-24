@@ -1,0 +1,6 @@
+springboot:
+  threadpool:
+    coresize: 8
+    maxsize: 16
+    alivetime: 600
+    queuesize: 32

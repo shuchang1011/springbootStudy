@@ -1,0 +1,2 @@
+org.springframework.context.ApplicationListener=cn.com.shuchang.springboot.study.async.method1.listener.AsyncListener1,cn.com.shuchang.springboot.study.async.method2.listener.AsyncListener
+org.springframework.boot.env.EnvironmentPostProcessor=cn.com.shuchang.springboot.study.async.method2.processors.AsyncEnvironmentPostProcessor

@@ -12,6 +12,7 @@
         <module>springboot-listener</module>
         <module>springboot-environment-postprocessor</module>
         <module>springboot-environment-postprocessor-profiles</module>
+        <module>springboot-listener-async</module>
     </modules>
 
     <properties>
