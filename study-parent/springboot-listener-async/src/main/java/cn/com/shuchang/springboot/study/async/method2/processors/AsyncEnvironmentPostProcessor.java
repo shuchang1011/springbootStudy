@@ -28,6 +28,7 @@ import java.util.List;
  */
 
 public class AsyncEnvironmentPostProcessor implements EnvironmentPostProcessor, Ordered {
+
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
         // 加载配置

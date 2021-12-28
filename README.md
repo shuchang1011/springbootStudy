@@ -6,6 +6,8 @@
 
 # 启动整体过程
 
+![image-20211227163450830](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211227163450830.png)
+
 首先是项目启动类：
 
 ```java
@@ -368,7 +370,7 @@ Spring会遍历所有的ApplicationListener， 如果 taskExecutor 不为空，�
 
 具体实现见代码模块
 
-[](springboot-listener-async)的method1模块
+[springboot-listener-async](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-listener-async)的method1模块
 
 ------
 
@@ -400,8 +402,6 @@ Spring默认的事件广播器 `SimpleApplicationEventMulticaster#multicastEvent
 
 ------
 
-
-
 ### 2.异步注解@Async
 
 **实现原理**
@@ -418,3 +418,238 @@ Spring默认的事件广播器 `SimpleApplicationEventMulticaster#multicastEvent
 3.通过@Component注解或者在spring.factories文件中配置当前AsyncListener，将该异步监听器注册到bean容器中
 4.使用springboot的异步注解@Async。使用前提：需在启动类上使用@EnableAsync开启异步执行的功能。然后将@Async修饰在需要异步执行的方法上，这里也就对应着listener中的onApplicationEvent方法。springboot使用的是默认的线程池，可以通过创建一个配置类，实现AsyncConfigurer的getExecutor方法，来生成指定的线程池
 ```
+
+具体实现见代码模块[springboot-listener-async](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-listener-async)的method2实现
+
+------
+
+
+
+## 二：构造容器环境
+
+## 1）构造容器环境源码解析
+
+在springboot完成了第一阶段监听器的获取和启动后，就会开始构建容器的运行环境了。
+
+![image-20211224111354046](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224111354046.png)
+
+`ConfigurableEnvironment environment = prepareEnvironment(listeners,applicationArguments);`
+跟进去该方法：
+
+```java
+	private ConfigurableEnvironment prepareEnvironment(
+			SpringApplicationRunListeners listeners,
+			ApplicationArguments applicationArguments) {
+		// Create and configure the environment
+		//获取对应的ConfigurableEnvironment
+		ConfigurableEnvironment environment = getOrCreateEnvironment();
+		//配置
+		configureEnvironment(environment, applicationArguments.getSourceArgs());
+		//发布环境已准备事件，这是第二次发布事件
+		listeners.environmentPrepared(environment);
+		DefaultPropertiesPropertySource.moveToEnd(environment);
+		Assert.state(!environment.containsProperty("spring.main.environment-prefix"),
+				"Environment prefix cannot be set via properties.");
+		bindToSpringApplication(environment);
+		if (this.webApplicationType == WebApplicationType.NONE) {
+			environment = new EnvironmentConverter(getClassLoader())
+					.convertToStandardEnvironmentIfNecessary(environment);
+		}
+		ConfigurationPropertySources.attach(environment);
+		return environment;
+	}
+```
+
+来看一下`getOrCreateEnvironment()`方法，前面已经提到，`environment`已经被设置了`servlet`类型，所以这里创建的是环境对象是`StandardServletEnvironment`。
+
+```java
+private ConfigurableEnvironment getOrCreateEnvironment() {
+   if (this.environment != null) {
+      return this.environment;
+   }
+   switch (this.webApplicationType) {
+   case SERVLET:
+      return new ApplicationServletEnvironment();
+   case REACTIVE:
+      return new ApplicationReactiveWebEnvironment();
+   default:
+      return new ApplicationEnvironment();
+   }
+}
+```
+
+枚举类`WebApplicationType`是springBoot2新增的特性，主要针对spring5引入的reactive特性。枚举类型如下：
+
+```java
+public enum WebApplicationType {
+	//不需要再web容器的环境下运行，普通项目
+	NONE,
+	//基于servlet的web项目
+	SERVLET,
+	//这个是spring5版本开始的新特性
+	REACTIVE
+}
+```
+
+`Environment`接口提供了4种实现方式，`StandardEnvironment`、`StandardServletEnvironment`和`MockEnvironment`、`StandardReactiveWebEnvironment`，分别代表普通程序、Web程序、测试程序的环境、响应式web环境，具体后面会详细讲解。
+这里只需要知道在返回`return new StandardServletEnvironment();`对象的时候，会完成一系列初始化动作，主要就是将运行机器的系统变量和环境变量，加入到其父类`AbstractEnvironment`定义的对象`MutablePropertySources`中，`MutablePropertySources`对象中定义了一个属性集合：
+
+```java
+private final List<PropertySource<?>> propertySourceList = new CopyOnWriteArrayList<PropertySource<?>>();
+```
+
+执行到这里，系统变量和环境变量已经被载入到配置文件的集合中，接下来就行解析项目中的配置文件。
+
+来看一下`listeners.environmentPrepared(environment);`，上面已经提到了，这里是第二次发布事件。什么事件呢？
+顾名思义，系统环境初始化完成的事件。
+
+![image-20211224113445174](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224113445174.png)发布事件的流程上面已经讲过了，这里不在赘述。来看一下根据事件类型获取到的监听器：
+
+基于springboot2.4.0前的版本进行分析，之后的版本废弃了`ConfigFileApplicationListener`（为了兼容k8s的配置加载方式)；2.4.0前的版本优先加载的文件配置优先级更高，而2.4.0及以后的则是后加载的配置文件会覆盖前面加载的。详细见https://zhuanlan.zhihu.com/p/363354421
+
+![img](https://img-blog.csdnimg.cn/20210716104720555.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3dlaXhpbl80Mzc2MjMwMw==,size_16,color_FFFFFF,t_70)
+
+ 可以看到获取到的监听器和第一次发布启动事件获取的监听器有几个是重复的，这也验证了监听器是可以多次获取，根据事件类型来区分具体处理逻辑。上面介绍日志监听器的时候已经提到。
+主要来看一下`ConfigFileApplicationListener`，该监听器非常核心，主要用来处理项目配置。项目中的 properties 和yml文件都是其内部类所加载。具体来看一下：
+首先方法执行入口：
+
+![image-20211224170511353](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224170511353.png)
+
+ 首先还是会去读`spring.factories` 文件，`List<EnvironmentPostProcessor> postProcessors = this.loadPostProcessors();`获取的处理类有以上六种，这里`ConfigFileApplicationListener`同样也实现了`EnvironmentPostProcessor`接口，因此，它可以在spring的环境准备阶段，通过调用前置处理的方法加载对应的配置文件，并设置到Environment环境中来。
+
+![image-20211224170739684](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224170739684.png)
+
+可以看到ConfigFileApplicationListener触发postProcessEnvironment方法，加载对应的配置文件，并设置到Environment环境中去。
+
+下面具体看看加载逻辑
+
+![image-20211224171339495](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224171339495.png)
+
+这里在进行load是，添加了过滤条件：`spring.profiles.active`和`spring.profiles.include`.
+
+`spring.profiles.active`：在有多个命名规则遵循`application-${profile}.properties`的配置文件时，通过改参数来决定应用的配置文件
+
+`spring.profiles.include`：使用该参数后，可以在引用了某个配置文件的基础上，在引用其他的配置文件，后引用的会覆盖前面引用的。
+
+继续跟进load方法后，发现它会默认去以下位置去加载配置文件
+
+`"classpath:/,classpath:/config/,file:./,file:./config/"`
+
+![image-20211224171810542](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224171810542.png)
+
+![image-20211224171833849](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224171833849.png)
+
+![image-20211224171846655](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224171846655.png)
+
+接下来仔细看load函数中的一个DocumentConsumer类型入参对象
+
+![image-20211224172816706](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224172816706.png)
+
+![image-20211224172911667](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224172911667.png)
+
+因此，在springboot2.4.0之前，还是通过ConfigFileApplicationListener加载配置文件的时候，配置优先级是按照文件加载顺序来实现的！
+
+springboot2.4.0前后配置文件加载机制的具体差异详见：https://blog.csdn.net/weixin_42189048/article/details/111767740
+
+------
+
+## 2）自定义实现EnvironmentPostProcessor
+
+在第一小节的分析中，可以看到`ConfigFileApplicationListener`通过实现了`ApplicationListener`接口，达到了在`prepareEnvironment`事件触发时去加载配置文件的效果;而在加载配置文件这块，主要是通过实现了`EnvironmentPostProcessor`接口来实现在设置环境时，将我们启动需要的配置文件中的属性加载到环境中来。因此，我们可以通过自定义的`EnvironmentPostProcessor`来加载启动过程中所必备的一些变量属性等。
+
+**实现步骤如下：**
+
+```
+1.创建一个ProfileEnvironmentPostProcessor类，实现EnvironmentPostProcessor的postProcessEnvironment方法
+2.在resource目录下创建META-INF/spring.factories文件，并为org.springframework.boot.env.EnvironmentPostProcessor添加一个后置处理器ProfileEnvironmentPostProcessor
+```
+
+具体实现见代码模块
+
+[springboot-environment-postProcessor](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-environment-postprocessor)
+
+[springboot-environment-postProcessor-profiles](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-environment-postprocessor-profiles)
+
+其中，还在前面自定义异步监听事件的源码中，通过自定义实现的EnvironmentPostProcessor来加载配置的线程池参数，具体源码见
+
+[springboot-listener-async](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-listener-async)的method2实现
+
+## 3）自定义Banner
+
+### 1.banner打印源码解析
+
+在环境准备完成后，就会输出Banner
+
+```java
+Banner printedBanner = printBanner(environment);
+```
+
+那么，如何实现自定义banner输出呢？我们跟进源码，分析一下
+
+![image-20211228104205790](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228104205790.png)
+
+在调用print方法打印时，会去获取Banner信息
+
+![image-20211228104246345](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228104246345.png)
+
+![image-20211228153716751](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228153716751.png)
+
+继续跟进可以发现，springboot是通过environment中的`spring.banner.image.location`属性去加载banner的。因此，我们可以依赖springboot提供的这种方式，在application.properties中配置对应的属性路径，或者自定义EnvironmentPostProcessor去手动设置对应的属性，来达到加载自定义banner图片的效果。
+
+![image-20211228160713322](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228160713322.png)
+
+`getTextBanner`也是同样的原理，只不过它是通过`spring.banner.location`属性去加载banner.txt文本文件
+
+![image-20211228161040900](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228161040900.png)
+
+如果没有设置上述两个banner属性的话，springboot还会去加载自定义的Banner实现
+
+![image-20211228161648129](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228161648129.png)
+
+![image-20211228161705611](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228161705611.png)
+
+![image-20211228161820687](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228161820687.png)
+
+这个banner是在构建SpringApplication对象时设置的，因此，我们可以入口类构建ApplicationContext上下文时，设置自定义的banner，这样就能达到自定义输出banner的效果。
+
+![image-20211228161913836](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228161913836.png)
+
+------
+
+### 2.自定义banner实现
+
+根据上述分析得出，自定义banner主要有三种实现方式：
+
+1.配置`spring.banner.image.location`，并上传banner图片
+
+2.配置`spring.banner.location`，并上传名为`banner.txt`的文本
+
+3.实现函数式接口`Banner`，并在入口类构建ApplicationContext上下文对象时，设置自定义Banner
+
+具体实现见代码模块
+
+[springboot-study-banner]()
+
+## 三：**创建容器**
+
+## 1）创建容器ApplicationContext源码解析
+
+接下来，就是启动过程的第三步，上下文容器的创建
+
+```java
+context = createApplicationContext();
+```
+
+在web环境下，会实例化一个`AnnotationConfigServletWebServerApplicationContext`的上下文对象
+
+![image-20211228102410984](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228102410984.png)
+
+实例化时，会去装载默认的bean的定义文件
+
+![image-20211228102707387](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228102707387.png)
+
+![image-20211228102814134](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228102814134.png)
+
+例如，调用registerAnnotationConfigProcessors方法时，会去装载Bean名称为`internalConfigurationAnnotationProcessor`的`ConfigurationClassPostProcessor`配置类后置处理器等。（`ConfigurationClassPostProcessor`主要在后续准备容器时，加载@Configuration声明的配置类，或者通过@Import注解声明的需要导入的配置类）
+
+![image-20211228103106710](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228103106710.png)

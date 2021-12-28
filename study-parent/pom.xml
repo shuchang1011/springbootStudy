@@ -13,6 +13,7 @@
         <module>springboot-environment-postprocessor</module>
         <module>springboot-environment-postprocessor-profiles</module>
         <module>springboot-listener-async</module>
+        <module>springboot-study-banner</module>
     </modules>
 
     <properties>
@@ -24,7 +25,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>2.5.6</version>
+        <version>2.2.6.RELEASE</version>
     </parent>
 
     <dependencies>
