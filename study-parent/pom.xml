@@ -14,6 +14,7 @@
         <module>springboot-environment-postprocessor-profiles</module>
         <module>springboot-listener-async</module>
         <module>springboot-study-banner</module>
+        <module>springboot-exception-failureAnalyzer</module>
     </modules>
 
     <properties>

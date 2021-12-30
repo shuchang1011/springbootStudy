@@ -1,0 +1,1 @@
+org.springframework.boot.diagnostics.FailureAnalyzer=cn.com.shuchang.springboot.study.analyzers.MyFailureAnalyzer

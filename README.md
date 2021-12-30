@@ -628,7 +628,7 @@ Banner printedBanner = printBanner(environment);
 
 具体实现见代码模块
 
-[springboot-study-banner]()
+[springboot-study-banner](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-study-banner)
 
 ## 三：**创建容器**
 
@@ -653,3 +653,146 @@ context = createApplicationContext();
 例如，调用registerAnnotationConfigProcessors方法时，会去装载Bean名称为`internalConfigurationAnnotationProcessor`的`ConfigurationClassPostProcessor`配置类后置处理器等。（`ConfigurationClassPostProcessor`主要在后续准备容器时，加载@Configuration声明的配置类，或者通过@Import注解声明的需要导入的配置类）
 
 ![image-20211228103106710](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228103106710.png)
+
+------
+
+## 四：报告错误信息
+
+## 1）源码解析
+
+![image-20211229105426150](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211229105426150.png)
+
+该阶段主要是由springboot通过spring.factories去加载获取`SpringBootExceptionReporter`的实现类`FailureAnalyzers`，在`FailureAnalyzers`会持有多个Analyzer对异常进行分析，最后通过`FailureAnalysisReporter`输出相应的异常信息
+
+```yaml
+# Error Reporters
+org.springframework.boot.SpringBootExceptionReporter=\
+org.springframework.boot.diagnostics.FailureAnalyzers
+
+# Failure Analyzers
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+org.springframework.boot.diagnostics.analyzer.BeanCurrentlyInCreationFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.BeanDefinitionOverrideFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.BeanNotOfRequiredTypeFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.BindFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.BindValidationFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.UnboundConfigurationPropertyFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.ConnectorStartFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.NoSuchMethodFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.NoUniqueBeanDefinitionFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.PortInUseFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.ValidationExceptionFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.InvalidConfigurationPropertyNameFailureAnalyzer,\
+org.springframework.boot.diagnostics.analyzer.InvalidConfigurationPropertyValueFailureAnalyzer
+
+# FailureAnalysisReporters
+org.springframework.boot.diagnostics.FailureAnalysisReporter=\
+org.springframework.boot.diagnostics.LoggingFailureAnalysisReporter
+```
+
+通过这个`FailureAnalyzers`来实现在项目启动失败之后，打印log的效果
+
+可以看到，在启动过程中，springboot会捕获异常，并调用`handleRunFailure`，打印启动过程中的异常信息
+
+![image-20211229102058220](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211229102058220.png)
+
+```java
+private void handleRunFailure(ConfigurableApplicationContext context,
+		Throwable exception,
+		Collection<SpringBootExceptionReporter> exceptionReporters,
+		SpringApplicationRunListeners listeners) {
+	try {
+		try {
+			// 1. ExitCodeGenerators 根据异常获取是正常不是异常退出
+			handleExitCode(context, exception);
+			if (listeners != null) {
+				listeners.failed(context, exception);
+			}
+		} finally {
+			// 2. SpringBootExceptionReporter 处理异常报告
+			reportFailure(exceptionReporters, exception);
+			if (context != null) {
+				context.close();
+			}
+		}
+	} catch (Exception ex) {
+		logger.warn("Unable to close ApplicationContext", ex);
+	}
+	// 3. 重新报出异常，由 SpringBootExceptionHandler 处理
+	ReflectionUtils.rethrowRuntimeException(exception);
+}
+```
+
+handleRunFailure 中主要依赖了三个组件完成异常的处理：
+
+- `SpringBootExceptionReporter` 生成错误报告并处理，主要是用于输出日志。
+- `SpringBootExceptionHandler` 实现了 Thread#UncaughtExceptionHandler 接口，可以在线程异常关闭的时候进行回调。主要用于退出程序 System.exit(xxx)
+- `SpringApplicationRunListeners` Spring Boot 事件机制
+
+------
+
+首先，我们分析一些`handleExitCode`方法
+
+`handleExitCode`会 根据异常的类型决定如何退出程序，并将 exitCode(0 或 1) 退出码注册到 `SpringBootExceptionHandler `上
+
+```java
+private void handleExitCode(ConfigurableApplicationContext context, Throwable exception) {
+   // 根据异常判断是正常退出还是异常退出
+   int exitCode = getExitCodeFromException(context, exception);
+   if (exitCode != 0) {
+      if (context != null) {
+         context.publishEvent(new ExitCodeEvent(context, exitCode));
+      }
+      SpringBootExceptionHandler handler = getSpringBootExceptionHandler();
+      if (handler != null) {
+          // 正常退出或异常退出，System.exit(exitCode) 用
+         handler.registerExitCode(exitCode);
+      }
+   }
+}
+```
+
+`getExitCodeFromException` 根据异常判断是正常退出还是异常退出，委托给了 `ExitCodeGenerators`，最后将退出码注册到 `SpringBootExceptionHandler `上。
+
+然后，由`SpringbootExceptionHandler`来处理程序的退出
+
+接下来，会通知已装载的监听器触发应用启动失败的事件。
+
+![image-20211229110519498](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211229110519498.png)
+
+紧接着，就会通过`reportFailure`将异常委托给`SpringBootExceptionReporter `进行处理
+
+![image-20211229145023821](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211229145023821.png)
+
+首先会遍历`SpringBootExceptionReporter `实现类，对异常信息进行分析，然后打印异常日志信息
+
+![image-20211229150322649](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211229150322649.png)
+
+------
+
+## 2）自定义实现FailureAnalyzer（拦截启动异常）
+
+springboot在启动过程中处理异常时，最终会执行`reportException`方法，遍历analyzers对异常信息进行分析，然后交由`SpringBootExceptionReporter`输出处理
+
+```java
+public boolean reportException(Throwable failure) {
+   FailureAnalysis analysis = analyze(failure, this.analyzers);
+   return report(analysis, this.classLoader);
+}
+```
+
+因此，我们只需要自定义实现analyzer，针对不同的异常进行相应的处理即可。
+
+**实现步骤**
+
+```java
+1.自定义FailureAnalyzer，实现AbstractFailureAnalyzer
+2.在springboot启动执行完第四阶段后，抛出自定义异常（在此阶段前，还尚未装载自定义的Analyzer）；这里我们声明一个配置类，加载不存在的配置项，使其抛出IllegalArgumentException
+注意：该analyzer只能拦截启动过程中出现的异常
+```
+
+具体实现见代码模块
+
+[springboot-exception-analyzer]()
+
+![image-20211230153417647](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211230153417647.png)
