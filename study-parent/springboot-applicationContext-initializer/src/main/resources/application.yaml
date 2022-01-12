@@ -1,0 +1,3 @@
+context:
+  initializer:
+    classes: cn.com.shuchang.springboot.study.initializers.CustomApplicationContextInitializer2
