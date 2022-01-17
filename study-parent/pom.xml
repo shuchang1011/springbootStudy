@@ -18,6 +18,7 @@
         <module>springboot-beanNameGenerator-case2</module>
         <module>springboot-beanNameGenerator-case1</module>
         <module>springboot-applicationContext-initializer</module>
+        <module>springboot-context-initPropertySources</module>
     </modules>
 
     <properties>

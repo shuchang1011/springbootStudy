@@ -801,8 +801,6 @@ public boolean reportException(Throwable failure) {
 
 ## 五：**准备容器**
 
-## 1）源码解析
-
 这一步主要是在容器刷新之前的准备动作。其主要做了两件事：`应用初始化方法`、`注册入口类的定义信息`
 
 ```java
@@ -1152,4 +1150,473 @@ protected void applyInitializers(ConfigurableApplicationContext context) {
 
 具体代码实现见模块
 
-[springboot-applicationContext-initializer]()
+[springboot-applicationContext-initializer](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-applicationContext-initializer)
+
+------
+
+### 3）load加载启动指定类(重点)
+
+在调用完成ApplicationContextInitializers设置容器中的属性后，就会执行下列操作：
+
+```java
+// Add boot specific singleton beans
+ConfigurableListableBeanFactory beanFactory = context.getBeanFactory();
+//注册启动入参
+beanFactory.registerSingleton("springApplicationArguments", applicationArguments);
+if (printedBanner != null) {
+//注册banner
+beanFactory.registerSingleton("springBootBanner", printedBanner);
+}
+if (beanFactory instanceof DefaultListableBeanFactory) {
+//设置同名bean时，是否允许后者覆盖前者
+//可以通过applicationContext.setAllowBeanDefinitionOverriding来修改属性
+((DefaultListableBeanFactory) beanFactory)
+.setAllowBeanDefinitionOverriding(this.allowBeanDefinitionOverriding);
+}
+if (this.lazyInitialization) {
+//设置是否开启懒加载模式来实例化bean,可以减少启动耗时,但是会增加第一次请求的响应延迟
+//开启方式：配置spring.main.lazy-initialization=true
+context.addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor());
+}
+```
+
+紧接着，就来到了准备容器阶段的重点：加载启动指定类
+
+```java
+// Load the sources
+Set<Object> sources = getAllSources();
+Assert.notEmpty(sources, "Sources must not be empty");
+load(context, sources.toArray(new Object[0]));
+listeners.contextLoaded(context);
+```
+
+首先通过`getAllSources()`中拿到了我们的启动类。　
+
+```java
+Set<Object> sources = getAllSources(); 
+```
+
+然后，会通过调用`load()`来加载指定启动类
+
+```java
+load(context, sources.toArray(new Object[0]));
+```
+
+**这里会将我们的启动类加载spring容器`beanDefinitionMap`中，为后续springBoot 自动化配置奠定基础，`springBoot`为我们提供的各种注解配置也与此有关。**
+
+```java
+/**
+ * Load beans into the application context.
+ * @param context the context to load beans into
+ * @param sources the sources to load
+ */
+protected void load(ApplicationContext context, Object[] sources) {
+   if (logger.isDebugEnabled()) {
+      logger.debug("Loading source " + StringUtils.arrayToCommaDelimitedString(sources));
+   }
+    //创建 BeanDefinitionLoader 
+   BeanDefinitionLoader loader = createBeanDefinitionLoader(getBeanDefinitionRegistry(context), sources);
+   if (this.beanNameGenerator != null) {
+      loader.setBeanNameGenerator(this.beanNameGenerator);
+   }
+   if (this.resourceLoader != null) {
+      loader.setResourceLoader(this.resourceLoader);
+   }
+   if (this.environment != null) {
+      loader.setEnvironment(this.environment);
+   }
+   loader.load();
+}
+```
+
+#### 3.1 获取BeanDefinitionLoader
+
+这里，我们首先会创建一个`BeanDefinitionLoader`来加载启动类的bean的定义文件
+
+##### 3.1.1 getBeanDefinitionRegistry(context)
+
+这里，会将我们的`applicationContext`上下文对象强制转换成`BeanDifinitionRegistry`
+
+```java
+/**
+* Get the bean definition registry.
+* @param context the application context
+* @return the BeanDefinitionRegistry if it can be determined
+*/
+private BeanDefinitionRegistry getBeanDefinitionRegistry(ApplicationContext context) {
+    if (context instanceof BeanDefinitionRegistry) {
+        return (BeanDefinitionRegistry) context;
+    }
+    if (context instanceof AbstractApplicationContext) {
+        return (BeanDefinitionRegistry) ((AbstractApplicationContext) context).getBeanFactory();
+    }
+    throw new IllegalStateException("Could not locate BeanDefinitionRegistry");
+}
+```
+
+我们在第三阶段创建上下文对象时，可以看到其实例化了一个`AnnotationConfigServletWebServerApplicationContext`对象，而它正好实现了`BeanDefinitionRegistry`接口
+
+![image-20220112164750803](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220112164750803.png)
+
+![image-20220112164916792](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220112164916792.png)
+
+因此，springboot可以直接通过context对象获取到对应的`BeanDefinitioinRegistry`。而在`BeanDefinitionRegistry`定义了很重要的方法`registerBeanDefinition()`，该方法将`BeanDefinition`注册进`DefaultListableBeanFactory`容器的`beanDefinitionMap`中
+
+![image-20220112165719830](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220112165719830.png)
+
+##### 3.1.2 createBeanDefinitionLoader(getBeanDefinitionRegistry(context), sources)
+
+紧接着就会通过获取到的`BeanDefinitionRegistry`构建`BeanDefinitionLoader`
+
+```java
+protected BeanDefinitionLoader createBeanDefinitionLoader(BeanDefinitionRegistry registry, Object[] sources) {
+    return new BeanDefinitionLoader(registry, sources);
+}
+```
+
+```java
+/**
+* Create a new {@link BeanDefinitionLoader} that will load beans into the specified
+* {@link BeanDefinitionRegistry}.
+* @param registry the bean definition registry that will contain the loaded beans
+* @param sources the bean sources
+*/
+BeanDefinitionLoader(BeanDefinitionRegistry registry, Object... sources) {
+    Assert.notNull(registry, "Registry must not be null");
+    Assert.notEmpty(sources, "Sources must not be empty");
+    this.sources = sources;
+    this.annotatedReader = new AnnotatedBeanDefinitionReader(registry);
+    this.xmlReader = new XmlBeanDefinitionReader(registry);
+    if (isGroovyPresent()) {
+        this.groovyReader = new GroovyBeanDefinitionReader(registry);
+    }
+    this.scanner = new ClassPathBeanDefinitionScanner(registry);
+    this.scanner.addExcludeFilter(new ClassExcludeFilter(sources));
+}
+```
+
+#### 3.2  重点步骤loader.load()
+
+跟进load()方法
+
+```java
+private int load(Object source) {
+    Assert.notNull(source, "Source must not be null");
+    // 从Class加载
+    if (source instanceof Class<?>) {
+        return load((Class<?>) source);
+    }
+    // 从Resource加载
+    if (source instanceof Resource) {
+        return load((Resource) source);
+    }
+    // 从Package加载
+    if (source instanceof Package) {
+        return load((Package) source);
+    }
+    // 从CharSequence加载
+    if (source instanceof CharSequence) {
+        return load((CharSequence) source);
+    }
+    throw new IllegalArgumentException("Invalid source type " + source.getClass());
+}
+```
+
+紧接着，跟进`load((Class<?>) source)`来到了`doRegisterBean`
+
+```java
+private <T> void doRegisterBean(Class<T> beanClass, @Nullable String name,
+      @Nullable Class<? extends Annotation>[] qualifiers, @Nullable Supplier<T> supplier,
+      @Nullable BeanDefinitionCustomizer[] customizers) {
+
+   //将指定的类 封装为AnnotatedGenericBeanDefinition
+   AnnotatedGenericBeanDefinition abd = new AnnotatedGenericBeanDefinition(beanClass);
+   if (this.conditionEvaluator.shouldSkip(abd.getMetadata())) {
+      return;
+   }
+   
+    // 获取该类的 scope 属性
+   abd.setInstanceSupplier(supplier);
+   ScopeMetadata scopeMetadata = this.scopeMetadataResolver.resolveScopeMetadata(abd);
+   abd.setScope(scopeMetadata.getScopeName());
+   String beanName = (name != null ? name : this.beanNameGenerator.generateBeanName(abd, this.registry));
+
+   AnnotationConfigUtils.processCommonDefinitionAnnotations(abd);
+   if (qualifiers != null) {
+      for (Class<? extends Annotation> qualifier : qualifiers) {
+         if (Primary.class == qualifier) {
+            abd.setPrimary(true);
+         }
+         else if (Lazy.class == qualifier) {
+            abd.setLazyInit(true);
+         }
+         else {
+            abd.addQualifier(new AutowireCandidateQualifier(qualifier));
+         }
+      }
+   }
+   if (customizers != null) {
+      for (BeanDefinitionCustomizer customizer : customizers) {
+         customizer.customize(abd);
+      }
+   }
+   // 将该BeanDefinition注册到IoC容器的beanDefinitionMap中
+   BeanDefinitionHolder definitionHolder = new BeanDefinitionHolder(abd, beanName);
+   definitionHolder = AnnotationConfigUtils.applyScopedProxyMode(scopeMetadata, definitionHolder, this.registry);
+   BeanDefinitionReaderUtils.registerBeanDefinition(definitionHolder, this.registry);
+}
+```
+
+在该方法中将主类封装成`AnnotatedGenericBeanDefinition`
+
+`BeanDefinitionReaderUtils.registerBeanDefinition(definitionHolder, this.registry);`方法将BeanDefinition注册进beanDefinitionMap
+
+```java
+public static void registerBeanDefinition(
+      BeanDefinitionHolder definitionHolder, BeanDefinitionRegistry registry)
+      throws BeanDefinitionStoreException {
+
+   // Register bean definition under primary name.
+   // primary name 其实就是id吧
+   String beanName = definitionHolder.getBeanName();
+   registry.registerBeanDefinition(beanName, definitionHolder.getBeanDefinition());
+
+   // Register aliases for bean name, if any.
+   // 然后就是注册别名
+   String[] aliases = definitionHolder.getAliases();
+   if (aliases != null) {
+      for (String alias : aliases) {
+         registry.registerAlias(beanName, alias);
+      }
+   }
+}
+```
+
+继续跟进`registerBeanDefinition`，这里会来到我们Ioc容器的具体实现类`DefaultListableBeanFactory`
+
+```java
+@Override
+public void registerBeanDefinition(String beanName, BeanDefinition beanDefinition)
+      throws BeanDefinitionStoreException {
+
+   Assert.hasText(beanName, "Bean name must not be empty");
+   Assert.notNull(beanDefinition, "BeanDefinition must not be null");
+
+   if (beanDefinition instanceof AbstractBeanDefinition) {
+      try {
+          // 最后一次校验了
+          // 对bean的Overrides进行校验
+         ((AbstractBeanDefinition) beanDefinition).validate();
+      }
+      catch (BeanDefinitionValidationException ex) {
+         throw new BeanDefinitionStoreException(beanDefinition.getResourceDescription(), beanName,
+               "Validation of bean definition failed", ex);
+      }
+   }
+   // 判断是否存在重复名字的bean，之后看允不允许override
+   // 以前使用synchronized实现互斥访问，现在采用ConcurrentHashMap
+   BeanDefinition existingDefinition = this.beanDefinitionMap.get(beanName);
+   if (existingDefinition != null) {
+      //如果该类不允许 Overriding 直接抛出异常
+      if (!isAllowBeanDefinitionOverriding()) {
+         throw new BeanDefinitionOverrideException(beanName, beanDefinition, existingDefinition);
+      }
+      else if (existingDefinition.getRole() < beanDefinition.getRole()) {
+         // e.g. was ROLE_APPLICATION, now overriding with ROLE_SUPPORT or ROLE_INFRASTRUCTURE
+         if (logger.isInfoEnabled()) {
+            logger.info("Overriding user-defined bean definition for bean '" + beanName +
+                  "' with a framework-generated bean definition: replacing [" +
+                  existingDefinition + "] with [" + beanDefinition + "]");
+         }
+      }
+      else if (!beanDefinition.equals(existingDefinition)) {
+         if (logger.isDebugEnabled()) {
+            logger.debug("Overriding bean definition for bean '" + beanName +
+                  "' with a different definition: replacing [" + existingDefinition +
+                  "] with [" + beanDefinition + "]");
+         }
+      }
+      else {
+         if (logger.isTraceEnabled()) {
+            logger.trace("Overriding bean definition for bean '" + beanName +
+                  "' with an equivalent definition: replacing [" + existingDefinition +
+                  "] with [" + beanDefinition + "]");
+         }
+      }
+      //注册启动类的BeanDefinition到beanDefinitionMap中
+      this.beanDefinitionMap.put(beanName, beanDefinition);
+   }
+   else {
+      if (hasBeanCreationStarted()) {
+         // Cannot modify startup-time collection elements anymore (for stable iteration)
+         //运行阶段需要加锁注册进beanDefinitionMap
+         synchronized (this.beanDefinitionMap) {
+            this.beanDefinitionMap.put(beanName, beanDefinition);
+            List<String> updatedDefinitions = new ArrayList<>(this.beanDefinitionNames.size() + 1);
+            updatedDefinitions.addAll(this.beanDefinitionNames);
+            updatedDefinitions.add(beanName);
+            this.beanDefinitionNames = updatedDefinitions;
+            removeManualSingletonName(beanName);
+         }
+      }
+      else {
+         // Still in startup registration phase
+         //如果仍处于启动注册阶段，直接注册进beanDefinitionMap
+         this.beanDefinitionMap.put(beanName, beanDefinition);
+         this.beanDefinitionNames.add(beanName);
+         removeManualSingletonName(beanName);
+      }
+      this.frozenBeanDefinitionNames = null;
+   }
+
+   if (existingDefinition != null || containsSingleton(beanName)) {
+      resetBeanDefinition(beanName);
+   }
+}
+```
+
+仔细看这个方法`registerBeanDefinition()`，首先会检查是否已经存在，如果存在并且不允许被覆盖则直接抛出异常。不存在的话就直接注册进beanDefinitionMap中。
+
+接下来我们，断点调试，跳过准备容器阶段，可以看到启动类的`BeanDefinition`已经成功加载到Ioc容器的`BeanDefinitionMap`中了
+
+![image-20220114152931219](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220114152931219.png)
+
+------
+
+## 六： 刷新容器
+
+接下来，便是springboot启动过程中最为核心的步骤：`refreshContext(context)`
+
+这里我们直接跳到关键步骤`refresh()`
+
+```java
+public void refresh() throws BeansException, IllegalStateException {
+   synchronized (this.startupShutdownMonitor) {
+      // Prepare this context for refreshing.
+      // 准备刷新
+      prepareRefresh();
+
+      // Tell the subclass to refresh the internal bean factory.
+      ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
+
+      // Prepare the bean factory for use in this context.
+      prepareBeanFactory(beanFactory);
+
+      try {
+         // Allows post-processing of the bean factory in context subclasses.
+         postProcessBeanFactory(beanFactory);
+
+         // Invoke factory processors registered as beans in the context.
+         invokeBeanFactoryPostProcessors(beanFactory);
+
+         // Register bean processors that intercept bean creation.
+         registerBeanPostProcessors(beanFactory);
+
+         // Initialize message source for this context.
+         initMessageSource();
+
+         // Initialize event multicaster for this context.
+         initApplicationEventMulticaster();
+
+         // Initialize other special beans in specific context subclasses.
+         onRefresh();
+
+         // Check for listener beans and register them.
+         registerListeners();
+
+         // Instantiate all remaining (non-lazy-init) singletons.
+         finishBeanFactoryInitialization(beanFactory);
+
+         // Last step: publish corresponding event.
+         finishRefresh();
+      }
+
+      catch (BeansException ex) {
+         if (logger.isWarnEnabled()) {
+            logger.warn("Exception encountered during context initialization - " +
+                  "cancelling refresh attempt: " + ex);
+         }
+
+         // Destroy already created singletons to avoid dangling resources.
+         destroyBeans();
+
+         // Reset 'active' flag.
+         cancelRefresh(ex);
+
+         // Propagate exception to caller.
+         throw ex;
+      }
+
+      finally {
+         // Reset common introspection caches in Spring's core, since we
+         // might not ever need metadata for singleton beans anymore...
+         resetCommonCaches();
+      }
+   }
+}
+```
+
+### **1）准备刷新prepareRefresh()**
+
+```java
+{
+    //系统启动时间
+    this.startupDate = System.currentTimeMillis();
+    //是否关闭标识，false
+    this.closed.set(false);
+    //是否活跃标识，true
+    this.active.set(true);
+    if (this.logger.isDebugEnabled()) {
+        if (this.logger.isTraceEnabled()) {
+            this.logger.trace("Refreshing " + this);
+        } else {
+            this.logger.debug("Refreshing " + this.getDisplayName());
+        }
+    }
+
+    // 调用子类重写后的方法替换servlet相关属性源，即子类自定义个性化的属性设置方法
+    this.initPropertySources();
+    // 这里是验证由ConfigurablePropertyResolver#setRequiredProperties()方法指定的属性，解析为非空值，如果没有设置的话这个方法就不会执行什么操作。
+    this.getEnvironment().validateRequiredProperties();
+    if (this.earlyApplicationListeners == null) {
+        // Store pre-refresh ApplicationListeners
+        this.earlyApplicationListeners = new LinkedHashSet(this.applicationListeners);
+    } else {
+        this.applicationListeners.clear();
+        this.applicationListeners.addAll(this.earlyApplicationListeners);
+    }
+
+    this.earlyApplicationEvents = new LinkedHashSet();
+}
+
+```
+
+在这一步骤中，主要的是`initPropertySources()`和`getEnvironment.validateRequireProperties()`
+
+其中`initPropertySources()`是springboot提供的一个扩展点，它可以方便用户继承AbstractApplicationContext的子类并实现该方法来达到自定义设置属性到Environment中
+
+例如，在web应用中，它会去调用`GenericWebApplicationContext`的相应方法
+
+```java
+protected void initPropertySources() {
+   ConfigurableEnvironment env = getEnvironment();
+   if (env instanceof ConfigurableWebEnvironment) {
+      ((ConfigurableWebEnvironment) env).initPropertySources(this.servletContext, null);
+   }
+}
+```
+
+#### 1.1 扩展initPropertySources()实现
+
+作用：扩展initPropertySources()主要是为了在准备刷新容器时，往Environment环境中添加一些自定义的属性；相对于在第二阶段-准备环境过程中，通过实现EnvironmentPostProcessors接口来说，二者作用一直，但是执行的时机不一样。
+
+实现步骤：
+
+```java
+1.因为我们是以web应用的方式启动springboot，因此，可以继承其实现类AnnotationConfigServletWebApplicationContext，并重写重写initPropertySources
+2.在initPropertySources方法中，往环境Environment中设置必要属性，启动测试是否生效
+```
+
+具体实现见代码模块
+
+[springboot-context-initPropertySouces]()
