@@ -22,12 +22,35 @@ public class UserServiceImpl implements UserService {
 
     private String name = "default";
 
+    private String description = "default";
+
+    private String comment = "default";
+
     @Override
     public String getName() {
         return name;
     }
 
+    @Override
+    public String getDescription() {
+        return description;
+    }
+
+    @Override
+    public String getComment() {
+        return comment;
+    }
+
     public void setName(String name) {
         this.name = name;
     }
+
+    public void setDescription(String description) {
+        this.description = description;
+    }
+
+    public void setComment(String comment) {
+        this.comment = comment;
+    }
+
 }

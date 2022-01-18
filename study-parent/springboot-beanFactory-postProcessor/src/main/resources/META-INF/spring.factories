@@ -1,0 +1,2 @@
+org.springframework.context.ApplicationListener=cn.com.shuchang.springboot.study.listener.CustomApplicationListener
+org.springframework.context.ApplicationContextInitializer=cn.com.shuchang.springboot.study.initializers.CustomApplicationContextInitializer

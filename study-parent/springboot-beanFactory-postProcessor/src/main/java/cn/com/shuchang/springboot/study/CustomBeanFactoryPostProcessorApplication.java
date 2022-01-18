@@ -17,7 +17,9 @@ import org.springframework.context.ConfigurableApplicationContext;
  * 在bean实例化前，可以通过实现BeanFactoryPostProcessor接口创建一个自定义后置处理器，修改Bean的属性配置等
  * 实现步骤：
  * 1.自定义后置处理器实现BeanFactoryPostProcessor接口，在postProcessBeanFactory中，
- * 获取需要修改的BeanDefinition，设置其属性配置等;注意：需要通过@Component注解声明为Bean,否则BeanFactory无法加载到该自定义PostProcessor
+ * 获取需要修改的BeanDefinition，设置其属性配置等;
+ * 注意：需要通过@Component注解声明为Bean,否则BeanFactory无法加载到该自定义PostProcessor
+ *      或者在刷新容器阶段前，通过ApplicationContext.addBeanFactoryPostProcessor方法添加至BeanFactory工厂
  * 2.定义一个服务类，并通过@Service注解声明为一个Bean，方便自定义BeanFactoryPostProcessor对其做出修改
  *
  * @author shuchang
@@ -34,5 +36,7 @@ public class CustomBeanFactoryPostProcessorApplication {
         ConfigurableApplicationContext context = SpringApplication.run(CustomBeanFactoryPostProcessorApplication.class, args);
         UserService userServiceImpl = (UserService)context.getBean("userServiceImpl");
         logger.info(userServiceImpl.getName());
+        logger.info(userServiceImpl.getDescription());
+        logger.info(userServiceImpl.getComment());
     }
 }

@@ -14,4 +14,8 @@ package cn.com.shuchang.springboot.study.service;
 public interface UserService {
 
     public String getName();
+
+    public String getDescription();
+
+    public String getComment();
 }
