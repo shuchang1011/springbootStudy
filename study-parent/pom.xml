@@ -19,6 +19,8 @@
         <module>springboot-beanNameGenerator-case1</module>
         <module>springboot-applicationContext-initializer</module>
         <module>springboot-context-initPropertySources</module>
+        <module>springboot-beanFactory-postProcessor</module>
+        <module>springboot-autoConfiguration-import</module>
     </modules>
 
     <properties>

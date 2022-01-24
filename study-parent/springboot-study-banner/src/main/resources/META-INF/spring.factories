@@ -1,1 +1,1 @@
-org.springframework.boot.env.EnvironmentPostProcessor=cn.com.shuchang.springboot.study.processors.BannerEnvironmentPostProcessor
+org.springframework.boot.env.EnvironmentPostProcessor=cn.com.shuchang.springboot.study.processors.BannerEnvironmentPostProcessor1

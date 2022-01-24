@@ -6,7 +6,6 @@
  */
 package cn.com.shuchang.springboot.study.initializers;
 
-import cn.com.shuchang.springboot.study.processors.CustomBeanFactoryPostProcessor1;
 import cn.com.shuchang.springboot.study.processors.CustomBeanFactoryPostProcessor2;
 import org.springframework.context.ApplicationContextInitializer;
 import org.springframework.context.ConfigurableApplicationContext;
