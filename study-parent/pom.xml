@@ -21,6 +21,7 @@
         <module>springboot-context-initPropertySources</module>
         <module>springboot-beanFactory-postProcessor</module>
         <module>springboot-autoConfiguration-import</module>
+        <module>springboot-test</module>
     </modules>
 
     <properties>
