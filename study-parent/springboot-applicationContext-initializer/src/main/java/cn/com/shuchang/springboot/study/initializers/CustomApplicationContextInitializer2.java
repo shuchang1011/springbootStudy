@@ -28,6 +28,7 @@ public class CustomApplicationContextInitializer2 implements ApplicationContextI
         ConfigurableEnvironment environment = applicationContext.getEnvironment();
         Properties properties = new Properties();
         properties.setProperty("key2", "value2");
+        properties.setProperty("test","test2");
         PropertiesPropertySource initializerProperties = new PropertiesPropertySource("initializerProperties", properties);
         environment.getPropertySources().addLast(initializerProperties);
         logger.info("invoke CustomApplicationContextInitializer2");

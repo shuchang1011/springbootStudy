@@ -8,6 +8,7 @@ package cn.com.shuchang.springboot.study;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ConfigurableApplicationContext;
 
 /**
  * 自定义ApplicationContextInitializer可以在容器刷新之前，执行回调函数，往spring的容器中注入属性
@@ -26,6 +27,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class CustomInitializerApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(CustomInitializerApplication.class, args);
+        ConfigurableApplicationContext context = SpringApplication.run(CustomInitializerApplication.class, args);
+        // 验证不同initializer是否会覆盖环境变量
+        String property = context.getEnvironment().getProperty("test");
+        // 后调用的会覆盖先调用的initializer设置的环境变量
+        System.out.println("test ==" + property);
     }
 }

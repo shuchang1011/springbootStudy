@@ -17,7 +17,7 @@ import java.util.Properties;
 
 /**
  * @author shuchang
- * @version 1.0
+ * @version 1.0ApplicationContextAwareProcessor
  * @date 2022/1/4 17:31
  */
 public class CustomApplicationContextInitializer1 implements ApplicationContextInitializer<ConfigurableApplicationContext> {
@@ -28,6 +28,7 @@ public class CustomApplicationContextInitializer1 implements ApplicationContextI
         ConfigurableEnvironment environment = applicationContext.getEnvironment();
         Properties properties = new Properties();
         properties.setProperty("key1", "value1");
+        properties.setProperty("test","test1");
         PropertiesPropertySource initializerProperties = new PropertiesPropertySource("initializerProperties", properties);
         environment.getPropertySources().addLast(initializerProperties);
         logger.info("invoke CustomApplicationContextInitializer1");
