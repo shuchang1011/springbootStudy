@@ -13,6 +13,8 @@ import java.lang.annotation.*;
 /**
 * CustomService使用注解
 * 通过@Import注解引用配置类，加载配置类后，通过配置类来获取对应的BeanDefinitionRegistrar
+ * 亦可以通过@Import加载配置类，配置类中通过ImportSelector来导入beanDefinition至beanFactory中
+ * 两种方法的执行顺序不一致，后者先于前者执行
 */
 
 @Target(ElementType.TYPE)

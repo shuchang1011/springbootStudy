@@ -22,6 +22,8 @@
         <module>springboot-beanFactory-postProcessor</module>
         <module>springboot-autoConfiguration-import</module>
         <module>springboot-test</module>
+        <module>springboot-bean-postProcessor</module>
+        <module>springboot-beanPostProcessor-aspect</module>
     </modules>
 
     <properties>
