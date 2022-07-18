@@ -40,6 +40,8 @@ public class ProfileEnvironmentPostProcessorApplication {
         String gender = context.getEnvironment().getProperty("user.gender");
         System.out.println("name==="+name);
         System.out.println("gender==="+gender);
+        // active和include加载顺序校验
+        System.out.println("name.value==" + context.getEnvironment().getProperty("name"));
         context.close();
     }
 }
