@@ -21,7 +21,7 @@ import java.util.Arrays;
 /**
  * 通过自定义BeanNameGenerator实现beand definition装载时命名策略的自定义实现
  * 实现步骤如下：
- * 1.自定义CustomBeanNameGenerator实现接口BeanNameGenerator,可以springboot默认实现DefaultBeanNameGenerator
+ * 1.自定义CustomBeanNameGenerator实现接口BeanNameGenerator,可以参照springboot默认实现DefaultBeanNameGenerator
  * 2.使用配置类结合@ComponentScan注解，指定BeanNameGererator为CustomBeanNameGenerator
  * 3.由于入口类注解@SpringBootApplication种包含了@ComponentScan注解，因此，启动时，回基于默认的BeanNameGenerator去装载对应命名的Bean definition
  * 同时，加载到配置类时，又会触发一次扫描，基于自定义的BeanNameGenerator再次装载一个符合自定义命名策略的Bean Definition

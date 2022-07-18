@@ -16,6 +16,9 @@ import org.springframework.context.ConfigurableApplicationContext;
  * 实现方式主要有四种：
  * 1.在初始化启动的时候，手动装载listener
  * 2.自定义监听器通过Component组件的形式装载的Bean工厂
+ * 需要注意的是，装载Bean到IOC工厂的过程是在刷新容器的步骤中完成的，在此之前的启动过程都无法通过该监听器监听事件
+ * 而通过Component注解装载的Listener都是在refresh容器时的prepareBeanFactory的过程中添加的ApplicationListenerDetector去探测listener并注册到Muticaster传播其
+ * 在销毁该listener的bean对象之前，从multicaster中移除该监听器
  * 3.在resources目录下添加META-INF/spring.factories文件，
  * 并在org.springframework.context.ApplicationListener属性中添加自定义监听器
  * 4.实现SmartApplicationListener，该接口继承了ApplicationListener，
