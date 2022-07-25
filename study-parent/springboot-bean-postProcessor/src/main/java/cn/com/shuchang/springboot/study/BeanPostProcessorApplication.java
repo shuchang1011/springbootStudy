@@ -6,15 +6,12 @@
  */
 package cn.com.shuchang.springboot.study;
 
-import cn.com.shuchang.springboot.study.common.CustomBeanDefinitionFilter;
 import cn.com.shuchang.springboot.study.service.CustomService;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.ComponentScan;
-import org.springframework.context.annotation.FilterType;
 import org.springframework.context.annotation.FullyQualifiedAnnotationBeanNameGenerator;
 
 /**

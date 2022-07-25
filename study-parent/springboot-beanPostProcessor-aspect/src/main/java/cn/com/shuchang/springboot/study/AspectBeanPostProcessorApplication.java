@@ -7,6 +7,7 @@
 package cn.com.shuchang.springboot.study;
 
 import cn.com.shuchang.springboot.study.service.ICustomService;
+import cn.com.shuchang.springboot.study.service.IDeclareParent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
@@ -21,7 +22,6 @@ import org.springframework.context.annotation.EnableAspectJAutoProxy;
  */
 
 @SpringBootApplication
-@EnableAspectJAutoProxy
 public class AspectBeanPostProcessorApplication {
 
     private static final Logger logger = LoggerFactory.getLogger(AspectBeanPostProcessorApplication.class);
@@ -30,5 +30,9 @@ public class AspectBeanPostProcessorApplication {
         ConfigurableApplicationContext context = SpringApplication.run(AspectBeanPostProcessorApplication.class, args);
         ICustomService service = (ICustomService)context.getBean("customServiceImpl");
         service.test();
+        // 验证@DeclareParents
+        ICustomService service2 = (ICustomService)context.getBean("customServiceImpl2");
+        service2.test();
+        ((IDeclareParent)service2).commonMethod();
     }
 }
