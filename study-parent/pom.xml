@@ -25,6 +25,8 @@
         <module>springboot-bean-postProcessor</module>
         <module>springboot-beanPostProcessor-aspect</module>
         <module>springboot-messageSource</module>
+        <module>springboot-lifecycle</module>
+        <module>springboot-runners</module>
     </modules>
 
     <properties>
