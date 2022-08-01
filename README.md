@@ -1,5 +1,9 @@
 # springbootStudy
 
+[TOC]
+
+
+
 # 项目介绍
 
 该项目主要是针对springboot的启动过程进行分析，并结合springboot的一系列拓展实现相应的功能。
@@ -4093,3 +4097,1150 @@ protected void initMessageSource() {
    ```
 
    
+
+#### 8）initApplicationEventMulticaster()初始化事件传播器
+
+在初始化国际化资源后，就会调用`initApplicationEventMulticaster()`初始化事件传播器
+
+需要注意的是，这里初始化的`ApplicationEventMuticaster`的bean是用于监听springboot启动后，通过应用上下文applicationContext，通过调用publishEvent来发布自动事件，然后传播事件到其他监听器；
+
+而springboot启动初始时，触发`listeners.starting();`注册的`initialMulticaster`是用于监听启动过程中的事件，然后传播到其他的监听器.
+
+```java
+// 获取BeanFactory中beanDefinition，若已注册名为applicationEventMulticaster的ApplicationEventMulticaster,则直接获取，否则创建一个新的SimpleApplicationEventMulticaster
+protected void initApplicationEventMulticaster() {
+    ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+    if (beanFactory.containsLocalBean(APPLICATION_EVENT_MULTICASTER_BEAN_NAME)) {
+        this.applicationEventMulticaster =
+            beanFactory.getBean(APPLICATION_EVENT_MULTICASTER_BEAN_NAME, ApplicationEventMulticaster.class);
+        if (logger.isTraceEnabled()) {
+            logger.trace("Using ApplicationEventMulticaster [" + this.applicationEventMulticaster + "]");
+        }
+    }
+    else {
+        this.applicationEventMulticaster = new SimpleApplicationEventMulticaster(beanFactory);
+        beanFactory.registerSingleton(APPLICATION_EVENT_MULTICASTER_BEAN_NAME, this.applicationEventMulticaster);
+        if (logger.isTraceEnabled()) {
+            logger.trace("No '" + APPLICATION_EVENT_MULTICASTER_BEAN_NAME + "' bean, using " +
+                         "[" + this.applicationEventMulticaster.getClass().getSimpleName() + "]");
+        }
+    }
+}
+```
+
+在`SimpleApplicationEventMulticaster`支持设定事件传播的线程池大小来实现事件触发的异步机制，具体见启动过程第一步骤的**异步事件机制实现**
+
+
+
+#### 9) onRefresh()初始化ApplicationContext子类的特殊Bean
+
+在完成了`SimpleApplicationEventMulticaster`的初始化后，会触发`onRefresh`操作，初始化`AbstractApplicationContext`的子类需要用到的一些Bean，例如常引用的web应用的依赖中，使用的就是`ServletWebServerApplicationContext`
+
+![image-20220726165839075](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220726165839075.png)
+
+这里，我们以常用的`ServletWebServerApplicationContext`为例进行分析
+
+```java
+protected void onRefresh() {
+    // 调用父类的实现
+    super.onRefresh();
+    try {
+        // 创建WebServer容器(Tomcat等)，ServletContext上下文，初始化properties资源
+        createWebServer();
+    }
+    catch (Throwable ex) {
+        throw new ApplicationContextException("Unable to start web server", ex);
+    }
+}
+
+// GenericApplicationContext实现
+protected void onRefresh() {
+    // 设置默认国际化主题资源
+    this.themeSource = UiApplicationContextUtils.initThemeSource(this);
+}
+```
+
+通过上述代码，可以看到其只是实例化了一些web应用常用的对象
+
+因此，可以确定在`onRefresh`操作中，会针对不同的应用上下文的实现，来初始化自身需要使用的Bean.
+
+
+
+#### 10) registerListeners()注册监听器到事件传播器
+
+在初始化`ApplicationEventMulticaster`后，需要知道将事件传播到哪些监听器中，因此就需要注册监听器到`ApplicationEventMulticaster`中。
+
+注册监听器主要有两种方式：
+
+- 注册已经通过spring.factories加载并实例化的`ApplicationListener`实现
+- 注册以@Bean或@Component的形式声明的Listener(此时已完成BeanDefinition的注册，因此可以在BeanFactory中获取到对应的监听器的定义文件)，此时只是获取BeanName，然后缓存到Multicaster中，带到发布事件时，再实例化缓存的Bean，进行通知
+
+```java
+protected void registerListeners() {
+    // 注册已经通过spring.factories加载并实例化的`ApplicationListener`实现
+    // Register statically specified listeners first.
+    for (ApplicationListener<?> listener : getApplicationListeners()) {
+        getApplicationEventMulticaster().addApplicationListener(listener);
+    }
+
+    // 注册以@Bean或@Component的形式声明的Listener(此时已完成BeanDefinition的注册，因此可以在BeanFactory中获取到对应的监听器的定义文件)，此时只是获取BeanName，然后缓存到Multicaster中，带到发布事件时，再实例化缓存的Bean，进行通知
+    // Do not initialize FactoryBeans here: We need to leave all regular beans
+    // uninitialized to let post-processors apply to them!
+    String[] listenerBeanNames = getBeanNamesForType(ApplicationListener.class, true, false);
+    for (String listenerBeanName : listenerBeanNames) {
+        getApplicationEventMulticaster().addApplicationListenerBean(listenerBeanName);
+    }
+
+    // 查看是否存在由于multicaster尚未初始化导致缓存起来的事件，若有，则通知监听器
+    // Publish early application events now that we finally have a multicaster...
+    Set<ApplicationEvent> earlyEventsToProcess = this.earlyApplicationEvents;
+    this.earlyApplicationEvents = null;
+    if (earlyEventsToProcess != null) {
+        for (ApplicationEvent earlyEvent : earlyEventsToProcess) {
+            getApplicationEventMulticaster().multicastEvent(earlyEvent);
+        }
+    }
+}
+```
+
+
+
+#### 11）finishBeanFactoryInitialization()Bean的实例化(非懒加载)
+
+这一步是对BeanFactory中的Bean进行实例化的重要步骤，其主要包含了Bean的初始化，以及通过BeanPostProcessors对一系列的Bean的声明周期进行增强
+
+首先，我们看一下其大体逻辑
+
+```java
+protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory) {
+    // Initialize conversion service for this context.
+    // 1.初始化此上下文的转换服务
+    if (beanFactory.containsBean(CONVERSION_SERVICE_BEAN_NAME) &&
+            beanFactory.isTypeMatch(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class)) {
+        beanFactory.setConversionService(
+                beanFactory.getBean(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class));
+    }
+    // Register a default embedded value resolver if no bean post-processor
+    // (such as a PropertyPlaceholderConfigurer bean) registered any before:
+    // at this point, primarily for resolution in annotation attribute values.
+    // 2.如果beanFactory之前没有注册嵌入值解析器，则注册默认的嵌入值解析器：主要用于注解属性值的解析。
+    if (!beanFactory.hasEmbeddedValueResolver()) {
+        beanFactory.addEmbeddedValueResolver(new StringValueResolver() {
+            @Override
+            public String resolveStringValue(String strVal) {
+                return getEnvironment().resolvePlaceholders(strVal);
+            }
+        });
+    }
+    // Initialize LoadTimeWeaverAware beans early to allow for registering their transformers early.
+    // 3.初始化LoadTimeWeaverAware Bean实例对象
+    String[] weaverAwareNames = beanFactory.getBeanNamesForType(LoadTimeWeaverAware.class, false, false);
+    for (String weaverAwareName : weaverAwareNames) {
+        getBean(weaverAwareName);
+    }
+    // Stop using the temporary ClassLoader for type matching.
+    beanFactory.setTempClassLoader(null);
+    // Allow for caching all bean definition metadata, not expecting further changes.
+    // 4.冻结所有bean定义，注册的bean定义不会被修改或进一步后处理，因为马上要创建 Bean 实例对象了
+    beanFactory.freezeConfiguration();
+    // Instantiate all remaining (non-lazy-init) singletons.
+    // 5.实例化所有剩余（非懒加载）单例对象
+    beanFactory.preInstantiateSingletons();
+}
+```
+
+**MergedBeanDefinition**
+
+在之后的内容你可能会频繁的见到 “MergedBeanDefinition” 这个词，因此这边先稍微讲解一下，有助于你更好的理解。
+
+**MergedBeanDefinition**：这个词其实不是一个官方词，但是很接近，该词主要是用来表示 “合并的 bean 定义”，因为每次都写 “合并的 bean 定义” 有点太绕口，因此我在之后的注释或解析中或统一使用 MergedBeanDefinition 来表示 “合并的 bean 定义”。
+
+之所以称之为 “合并的”，是因为存在 “子定义” 和 “父定义” 的情况。对于一个 bean 定义来说，可能存在以下几种情况：
+
+- 该 BeanDefinition 存在 “父定义”：首先使用 “父定义” 的参数构建一个 `RootBeanDefinition`，然后再使用该 BeanDefinition 的参数来进行覆盖。
+- 该 BeanDefinition 不存在 “父定义”，并且该 BeanDefinition 的类型是 `RootBeanDefinition`：直接返回该 `RootBeanDefinition` 的一个克隆。
+- 该 BeanDefinition 不存在 “父定义”，但是该 BeanDefinition 的类型不是 `RootBeanDefinition`：使用该 BeanDefinition 的参数构建一个 `RootBeanDefinition`。
+
+之所以区分出2和3，是因为通常 BeanDefinition 在之前加载到 BeanFactory 中的时候，通常是被封装成` GenericBeanDefinition` 或 `ScannedGenericBeanDefinition`，但是从这边之后 bean 的后续流程处理都是针对 `RootBeanDefinition`，因此在这边会统一将 BeanDefinition 转换成 `RootBeanDefinition`。
+
+在我们日常使用的过程中，通常会是上面的第3种情况。如果我们使用 XML 配置来注册 bean，则该 bean 定义会被封装成：`GenericBeanDefinition`；如果我们使用注解的方式来注册 bean，也就是<context:component-scan /> + @Compoment，则该 bean 定义会被封装成 `ScannedGenericBeanDefinition`。
+
+##### `preInstantiateSingletons`
+
+在上述过程中，最为关键的就是`preInstantiateSingletons`实例化bean的步骤
+
+这里主要就是遍历BeanFactory中装载的BeanDefinition，并进行实例化(前提：**不能是抽象类,不能是接口,且非懒加载**)
+
+```java
+public void preInstantiateSingletons() throws BeansException {
+    if (this.logger.isDebugEnabled()) {
+        this.logger.debug("Pre-instantiating singletons in " + this);
+    }
+    // Iterate over a copy to allow for init methods which in turn register new bean definitions.
+    // While this may not be part of the regular factory bootstrap, it does otherwise work fine.
+    // 1.创建beanDefinitionNames的副本beanNames用于后续的遍历，以允许init等方法注册新的bean定义
+    List<String> beanNames = new ArrayList<String>(this.beanDefinitionNames);
+    // Trigger initialization of all non-lazy singleton beans...
+    // 2.遍历beanNames，触发所有非懒加载单例bean的初始化
+    for (String beanName : beanNames) {
+        // 3.获取beanName对应的MergedBeanDefinition
+        RootBeanDefinition bd = getMergedLocalBeanDefinition(beanName);
+        // 4.bd对应的Bean实例：不是抽象类 && 是单例 && 不是懒加载
+        if (!bd.isAbstract() && bd.isSingleton() && !bd.isLazyInit()) {
+            // 5.判断beanName对应的bean是否为FactoryBean
+            if (isFactoryBean(beanName)) {
+                // 5.1 通过beanName获取FactoryBean实例,即工厂类Bean名称由&FactoryBean构成
+                // 通过getBean(&beanName)拿到的是FactoryBean本身；通过getBean(beanName)拿到的是FactoryBean创建的Bean实例
+                final FactoryBean<?> factory = (FactoryBean<?>) getBean(FACTORY_BEAN_PREFIX + beanName);
+                // 5.2 判断这个FactoryBean是否希望急切的初始化
+                boolean isEagerInit;
+                if (System.getSecurityManager() != null && factory instanceof SmartFactoryBean) {
+                    isEagerInit = AccessController.doPrivileged(new PrivilegedAction<Boolean>() {
+                        @Override
+                        public Boolean run() {
+                            return ((SmartFactoryBean<?>) factory).isEagerInit();
+                        }
+                    }, getAccessControlContext());
+                } else {
+                    isEagerInit = (factory instanceof SmartFactoryBean &&
+                            ((SmartFactoryBean<?>) factory).isEagerInit());
+                }
+                if (isEagerInit) {
+                    // 5.3 如果希望急切的初始化，则通过beanName获取bean实例
+                    getBean(beanName);
+                }
+            } else {
+                // 6.如果beanName对应的bean不是FactoryBean，只是普通Bean，通过beanName获取bean实例
+                getBean(beanName);
+            }
+        }
+    }
+    // Trigger post-initialization callback for all applicable beans...
+    // 7.遍历beanNames，触发所有SmartInitializingSingleton的后初始化回调
+    for (String beanName : beanNames) {
+        // 7.1 拿到beanName对应的bean实例
+        Object singletonInstance = getSingleton(beanName);
+        // 7.2 判断singletonInstance是否实现了SmartInitializingSingleton接口
+        if (singletonInstance instanceof SmartInitializingSingleton) {
+            final SmartInitializingSingleton smartSingleton = (SmartInitializingSingleton) singletonInstance;
+            // 7.3 触发SmartInitializingSingleton实现类的afterSingletonsInstantiated方法
+            if (System.getSecurityManager() != null) {
+                AccessController.doPrivileged(new PrivilegedAction<Object>() {
+                    @Override
+                    public Object run() {
+                        smartSingleton.afterSingletonsInstantiated();
+                        return null;
+                    }
+                }, getAccessControlContext());
+            } else {
+                smartSingleton.afterSingletonsInstantiated();
+            }
+        }
+    }
+}
+```
+
+###### getMergedLocalBeanDefinition()获取合并的BeanDefinition
+
+```java
+protected RootBeanDefinition getMergedLocalBeanDefinition(String beanName) throws BeansException {
+    // Quick check on the concurrent map first, with minimal locking.
+    // 1.检查beanName对应的MergedBeanDefinition是否存在于缓存中
+    RootBeanDefinition mbd = this.mergedBeanDefinitions.get(beanName);
+    if (mbd != null) {
+        // 2.如果存在于缓存中则直接返回
+        return mbd;
+    }
+    // 3.如果不存在于缓存中
+    // 3.1 getBeanDefinition(beanName)： 获取beanName对应的BeanDefinition，从beanDefinitionMap缓存中获取
+    // 3.2 getMergedBeanDefinition: 根据beanName和对应的BeanDefinition，获取MergedBeanDefinition
+    return getMergedBeanDefinition(beanName, getBeanDefinition(beanName));
+}
+```
+
+##### getBean()初始化Bean核心步骤
+
+```java
+// org.springframework.beans.factory.support.AbstractBeanFactory
+protected <T> T doGetBean(final String name, @Nullable final Class<T> requiredType,
+	@Nullable final Object[] args, boolean typeCheckOnly) throws BeansException {
+
+    // 将传递进来的name
+    final String beanName = transformedBeanName(name);
+    Object bean;
+
+    // Eagerly check singleton cache for manually registered singletons.
+    // 判断当前Bean是否是以单例模式注册的，且是否已经实例化并缓存到DefaultSingletonBeanRegistry的singletonObjects中了
+    Object sharedInstance = getSingleton(beanName);
+    if (sharedInstance != null && args == null) {
+        // 如果存在的话,将其取出赋值给bean,后续直接返回这个bean
+        bean = getObjectForBeanInstance(sharedInstance, name, beanName, null);
+    } else {
+        // Fail if we're already creating this bean instance:
+        // We're assumably within a circular reference.
+        // 来到这里就说明要获取的bean还没有实例化过
+        // 于是检验一下,如果是原形,直接抛异常
+        if (isPrototypeCurrentlyInCreation(beanName)) {
+            throw new BeanCurrentlyInCreationException(beanName);
+        }
+
+        // Check if bean definition exists in this factory.
+        // 检查是否存在默认的父工厂
+        BeanFactory parentBeanFactory = getParentBeanFactory();
+        if (parentBeanFactory != null && !containsBeanDefinition(beanName)) {
+            // Not found -> check parent.
+            String nameToLookup = originalBeanName(name);
+            if (parentBeanFactory instanceof AbstractBeanFactory) {
+                return ((AbstractBeanFactory) parentBeanFactory).doGetBean(
+                        nameToLookup, requiredType, args, typeCheckOnly);
+            }
+            else if (args != null) {
+                // Delegation to parent with explicit args.
+                return (T) parentBeanFactory.getBean(nameToLookup, args);
+            }
+            else {
+                // No args -> delegate to standard getBean method.
+                return parentBeanFactory.getBean(nameToLookup, requiredType);
+            }
+        }
+
+        if (!typeCheckOnly) {
+            // 将当前的beanName存放到AlreadeyCreated这个set集中,标识这个bean被创建了
+            markBeanAsCreated(beanName);
+        }
+
+        try {
+            final RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
+            checkMergedBeanDefinition(mbd, beanName, args);
+
+            // Guarantee initialization of beans that the current bean depends on.
+            // 确保当前bean所依赖的bean都已经初始化好了
+            String[] dependsOn = mbd.getDependsOn();
+            if (dependsOn != null) {
+                for (String dep : dependsOn) {
+                    if (isDependent(beanName, dep)) {
+                        throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                                "Circular depends-on relationship between '" + beanName + "' and '" + dep + "'");
+                    }
+                    registerDependentBean(dep, beanName);
+                    try {
+                        getBean(dep);
+                    }
+                    catch (NoSuchBeanDefinitionException ex) {
+                        throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                                "'" + beanName + "' depends on missing bean '" + dep + "'", ex);
+                    }
+                }
+            }
+
+            // Create bean instance.
+            if (mbd.isSingleton()) {
+              // 实例化bean
+                sharedInstance = getSingleton(beanName, () -> { 
+                        // 真正的完成bean的创建
+                        return createBean(beanName, mbd, args);
+
+                });
+
+                bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
+            }
+            // 下面是进行其他的检查工作,这里不再深究了
+            else if (mbd.isPrototype()) {
+                // It's a prototype -> create a new instance.
+                Object prototypeInstance = null;
+                try {
+                    beforePrototypeCreation(beanName);
+                    prototypeInstance = createBean(beanName, mbd, args);
+                }
+                finally {
+                    afterPrototypeCreation(beanName);
+                }
+                bean = getObjectForBeanInstance(prototypeInstance, name, beanName, mbd);
+            }
+
+            else {
+                String scopeName = mbd.getScope();
+                final Scope scope = this.scopes.get(scopeName);
+                if (scope == null) {
+                    throw new IllegalStateException("No Scope registered for scope name '" + scopeName + "'");
+                }
+                try {
+                    Object scopedInstance = scope.get(beanName, () -> {
+                        beforePrototypeCreation(beanName);
+                        try {
+                            return createBean(beanName, mbd, args);
+                        }
+                        finally {
+                            afterPrototypeCreation(beanName);
+                        }
+                    });
+                    bean = getObjectForBeanInstance(scopedInstance, name, beanName, mbd);
+                }
+                catch (IllegalStateException ex) {
+                    throw new BeanCreationException(beanName,
+                            "Scope '" + scopeName + "' is not active for the current thread; consider " +
+                            "defining a scoped proxy for this bean if you intend to refer to it from a singleton",
+                            ex);
+                }
+            }
+        }
+        catch (BeansException ex) {
+            cleanupAfterBeanCreationFailure(beanName);
+            throw ex;
+        }
+    }
+
+    // Check if required type matches the type of the actual bean instance.
+    if (requiredType != null && !requiredType.isInstance(bean)) {
+        try {
+            T convertedBean = getTypeConverter().convertIfNecessary(bean, requiredType);
+            if (convertedBean == null) {
+                throw new BeanNotOfRequiredTypeException(name, requiredType, bean.getClass());
+            }
+            return convertedBean;
+        }
+        catch (TypeMismatchException ex) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Failed to convert bean '" + name + "' to required type '" +
+                        ClassUtils.getQualifiedName(requiredType) + "'", ex);
+            }
+            throw new BeanNotOfRequiredTypeException(name, requiredType, bean.getClass());
+        }
+    }
+    return (T) bean;
+}
+```
+
+#### 12) finishRefresh()
+
+这里，我们首先要了解一下lifecycle以及LifecycleProcessor的定义以及其相关的作用
+
+##### Lifecycle & LifecycleProcessor
+
+众所周知，所有的Bean对象都是交由spring的IOC工厂来进行管理的。如果用户想要对spring容器中的Bean的生命周期进行管理的话，又该如何操作呢？针对这个问题，spring提供了以下接口：`Lifecycle`
+
+```java
+public interface Lifecycle {
+    /**
+     * 启动当前组件
+     * <p>如果组件已经在运行，不应该抛出异常
+     * <p>在容器的情况下，这会将 开始信号 传播到应用的所有组件中去。
+     */
+    void start();
+    /**
+     * (1)通常以同步方式停止该组件，当该方法执行完成后,该组件会被完全停止。当需要异步停    
+         * 止行为时，考虑实现SmartLifecycle 和它的 stop(Runnable) 方法变体。
+
+注意，此停止通知在销毁前不能保证到达:在*常规关闭时，{@code Lifecycle} bean将首先收到一个停止通知，然后才传播*常规销毁回调;然而，在*上下文的生命周期内的热刷新或中止的刷新尝试上，只调用销毁方法
+
+对于容器，这将把停止信号传播到应用的所有组件*
+     */
+    void stop();
+
+    /**
+      *  检查此组件是否正在运行。
+      *  1. 只有该方法返回false时，start方法才会被执行。
+      *  2. 只有该方法返回true时，stop(Runnable callback)或stop()方法才会被执行。
+      */
+    boolean isRunning();
+
+}
+```
+
+`LifeCycle`定义`Spring`容器对象的生命周期，任何`spring`管理对象都可以实现该接口。
+然后，当`ApplicationContext`本身接收**启动**和**停止**信号(例如在运行时停止/重启场景)时，spring容器将在容器上下文中找出所有实现了`LifeCycle`及其子类接口的类，并一一调用它们实现的类。spring是通过委托给生命周期处理器`LifecycleProcessor`来实现这一点的。
+
+
+
+###### **SmartLifecycle接口概览**
+
+这里，我们还需要了解到一个接口--`SmarLifecycle`,它是`Lifecycle`的扩展实现
+
+![image-20220728113357722](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220728113357722.png)
+
+如上所示，`SmartLifecycle`继承自`Lifecycle`和`Phased`两个接口，一共定义了六个方法，简要说明如下：
+
+| **方法**        | **作用**                                                     |
+| --------------- | ------------------------------------------------------------ |
+| start()         | bean初始化完毕后，该方法会被执行                             |
+| stop()          | 容器关闭后： spring容器发现当前对象实现了SmartLifecycle，就调用stop(Runnable)， 如果只是实现了Lifecycle，就调用stop() |
+| isRunning()     | 当前状态，用来判你的断组件是否在运行。                       |
+| getPhase()      | 控制多个SmartLifecycle的回调顺序的，返回值越小越靠前执行start()方法，越靠后执行stop()方法 |
+| isAutoStartup() | start方法被执行前先看此方法返回值，返回false就不执行start方法了 |
+| stop(Runnable)  | 容器关闭后： spring容器发现当前对象实现了SmartLifecycle，就调用stop(Runnable)， 如果只是实现了Lifecycle，就调用stop() |
+
+可以看到，`Lifecycle`接口的方法感知容器变化，而SmartLifecycle只是Lifecycle的增强版，可以自定义优先级（`getPhase`），自主决定是否随容器启动（`isAutoStartup`），以及停止时能接受一个runnable对象（`stop(Runnable)`）。
+
+
+
+###### LifecycleProcessor
+
+`LifecycleProcessor`本身就是`LifeCycle`接口的扩展。它还添加了另外两个方法来响应spring容器上下文的**刷新**(`onRefresh`)和**关闭**(`onClose`)。
+
+```java
+public interface LifecycleProcessor extends Lifecycle {
+    /**
+     * 响应Spring容器上下文 refresh
+     */
+    void onRefresh();
+
+    /**
+     * 响应Spring容器上下文 close
+     */
+    void onClose();
+}
+```
+
+顾名思义，spring容器的上下文在启动和停止的时候都是借由这个LifecycleProcessor来触发实现了lifecycle接口的Bean的start()和stop()操作。
+
+
+
+###### LifecycleBean生命周期管理源码分析
+
+这里，我们可以看到，绝大多数applicationContext都实现了Lifecycle接口，因此，可以在spring上下文容器启动刷新时，借由spring上下文来触发lifecycle实现的Bean的start生命周期，亦或是在启动类获取上下文对象后，显示调用start()来触发实现了lifecycle的bean的生命周期
+
+**注意：这里对于lifecycle的Bean的生命周期的管理并不包括上下文本身，spring上下文作为这些Bean的工厂，是具备对其生命周期的管理能力，这也是spring扩展lifecycle接口的主要目的之一，是为了方便上下文管理Bean的生命周期**
+
+![image-20220728113822265](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220728113822265.png)
+
+接下来，我们针对spring上下文刷新阶段，触发lifecycle的Bean的生命周期的行为进行详细的分析
+
+首先，在spring上下文刷新的`finishRefresh()`阶段会触发各个ApplicationContext的实现，他会去调用父类`AbstractApplicationContext`的实现，然后初始化构建一些自身需要的Bean，例如常用的web应用中的`ServletWebServerApplicationContext`的实现
+
+```java
+protected void finishRefresh() {
+    // 调用父类`AbstractApplicationContext`的实现
+    super.finishRefresh();
+    // 构建webServer服务端，启动tomcat应用容器
+    WebServer webServer = startWebServer();
+    // 发布相应事件
+    if (webServer != null) {
+        publishEvent(new ServletWebServerInitializedEvent(webServer, this));
+    }
+}
+```
+
+在`AbstractApplicationContext`的实现中，它会去初始化生命周期处理器`lifecycleProcessor`，通过`lifecycleProcessor`来管理实现了`lifecycle`接口的Bean的生命周期。然后触发`lifecycleProcessor`的`onRefresh`实现，它会去触发那些实现了`smartLifecycle`接口且`isAutoStartup`方法返回true的start方法，去启动对应的Bean。
+
+在完成了lifecycle生命周期的启动过程后，就会通过multicaster传播contextRefreshed事件，通知监听器去执行相关操作。
+
+```java
+protected void finishRefresh() {
+    // Clear context-level resource caches (such as ASM metadata from scanning).
+    //清除resourceCaches资源缓存中的数据
+    clearResourceCaches();
+
+    // Initialize lifecycle processor for this context.
+    // 初始化上下文的生命周期处理器
+    initLifecycleProcessor();
+
+    // Propagate refresh to lifecycle processor first.
+    // 将刷新完毕事件传播到生命周期处理器（触发isAutoStartup方法返回true的SmartLifecycle的start方法）
+    getLifecycleProcessor().onRefresh();
+
+    // Publish the final event.
+    // 推送上下文刷新完毕事件到相应的监听器
+    publishEvent(new ContextRefreshedEvent(this));
+
+    // Participate in LiveBeansView MBean, if active.
+    // 注册当前的上下文MBean到MBeanServer中，方便用户基于JMX访问修改上下文的值
+    LiveBeansView.registerApplicationContext(this);
+}
+```
+
+`initLifecycleProcessor()`设定BeanFactory中的lifecycleProcessor为DefaultLifecycleProcessor
+
+```java
+protected void initLifecycleProcessor() {
+    ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+
+    //LIFECYCLE_PROCESSOR_BEAN_NAME =  "lifecycleProcessor"
+    //判断BeanFactory是否已经存在生命周期处理器
+    if (beanFactory.containsLocalBean(LIFECYCLE_PROCESSOR_BEAN_NAME)) {
+
+        //将该bean赋值给lifecycleProcessor
+        this.lifecycleProcessor =
+            beanFactory.getBean(LIFECYCLE_PROCESSOR_BEAN_NAME, LifecycleProcessor.class);
+        if (logger.isTraceEnabled()) {
+            logger.trace("Using LifecycleProcessor [" + this.lifecycleProcessor + "]");
+        }
+    }
+    else {
+
+        //如果不存在，则使用DefaultLifecycleProcessor
+        DefaultLifecycleProcessor defaultProcessor = new DefaultLifecycleProcessor();
+        defaultProcessor.setBeanFactory(beanFactory);
+        this.lifecycleProcessor = defaultProcessor;
+        beanFactory.registerSingleton(LIFECYCLE_PROCESSOR_BEAN_NAME, this.lifecycleProcessor);
+        if (logger.isTraceEnabled()) {
+            logger.trace("No '" + LIFECYCLE_PROCESSOR_BEAN_NAME + "' bean, using " +
+                         "[" + this.lifecycleProcessor.getClass().getSimpleName() + "]");
+        }
+    }
+}
+```
+
+然后就会触发刚刚创建的processor的`OnRefresh`方法去调用那些实现了`Lifecycle`接口的上下文的start()方法，进行上下文的启动操作
+
+```java
+// org.springframework.context.support.AbstractContext
+getLifecycleProcessor().onRefresh();
+
+//org.springframework.context.support.DefaultLifecycleProcessor
+public void onRefresh() {
+    startBeans(true);
+    this.running = true;
+}
+
+
+private void startBeans(boolean autoStartupOnly) {
+    // 获取BeanFactory中实现了Lifecycle接口的Bean,和上下文无关，上下文本身就包含了BeanFactory
+    Map<String, Lifecycle> lifecycleBeans = getLifecycleBeans();
+    //将Lifecycle bean 按阶段分组，阶段通过实现Phased接口得到
+    Map<Integer, LifecycleGroup> phases = new HashMap<>();
+    lifecycleBeans.forEach((beanName, bean) -> {
+         //当autoStartupOnly=false，也就是通过显示的调用applicationContext.start()启动，其会调用startBeans(false)，此时autoStartupOnly为false,会触发全部的Lifecycle
+         //当autoStartupOnly=true，也就是ApplicationContext刷新时容器自动启动，只会触发isAutoStartup方法返回true的SmartLifecycle，而Lifecycle接口的实现类由于没有实现isAutoStartup，所以不会启动
+        if (!autoStartupOnly || (bean instanceof SmartLifecycle && ((SmartLifecycle) bean).isAutoStartup())) 		 {
+            // 获取bean的阶段值（如果没有实现Phased接口，则值为0）
+            int phase = getPhase(bean);
+            //从phases 中获取组
+            LifecycleGroup group = phases.get(phase);
+            if (group == null) {
+                //获取不到，则创建一个LifecycleGroup,加入到phases 中
+                group = new LifecycleGroup(phase, this.timeoutPerShutdownPhase, lifecycleBeans, autoStartupOnly);
+                phases.put(phase, group);
+            }
+            //往组中添加bean
+            // 这里可以看到以不同的phase来区分不同的lifecycle分组，每个分组里面又包含了多个phase相同的lifecycle实现
+            group.add(beanName, bean);
+       	}
+    });
+    // phases不为空，表明存在实现了Lifecycle(或者smartLifecycle)的Bean,需要调用其start()方法类触发自定义的启动生命周期中的过程
+    if (!phases.isEmpty()) {
+        List<Integer> keys = new ArrayList<>(phases.keySet());
+        Collections.sort(keys);
+        for (Integer key : keys) {
+            phases.get(key).start();
+        }
+    }
+}
+```
+
+在上述分析spring上下文刷新时，会去获取实现了Lifecycle和smartLifecycle的Bean，并触发其实现的自定义的start生命周期，主要过程如下：
+
+- 通过BeanFactory加载实现了Lifecycle接口的Bean
+- 遍历加载到的LifecycleBean，通常会有两种实现，分别是直接实现了Lifecycle接口的和实现了Lifecycle扩展接口的SmartLifecycle接口，针对这两种实现有不同的处理
+  1. 实现了Lifecycle的Bean不会随着spring上下文刷新时，触发自定义的start生命周期，需要在启动类获取到上下文对象后，显示调用`applicationContext.start()`,其会触发`DefaultLifecycleProcessor`中的startBeans(false)，**注意:这里的入参为false，即autoStartupOnly为false,此时会将当前的LifecycleBean加载到phase分组中，并触发其start生命周期**
+  2. 实现了smartLifecycle接口的Bean，会在spring上下文刷新时，调用该Bean的`isAutoStartup`来判断其是否跟随上下文刷新一起触发Bean的start生命周期；若为true，则获取其phase接口的实现，来获取其阶段值（用于优先执行），若为实现phase接口，默认取值为0.然后根据phase值加入的phase分组中，在后面根据phase值排序后，触发lifecycleBean的start生命周期
+- 若跟随spring上下文刷新阶段触发start生命周期的话，则获取其phase接口实现的阶段值（未实现接口，默认为0），并根据阶段值进行分组，加入到phase分组中
+- 若phase分组不为空，即存在LifecycleBean，则对phase分组中的阶段值大小进行排序，然后触发每个lifecycleBean的start生命周期
+
+
+
+###### Lifecycle & SmartLifecycle使用
+
+这里我们主要演示Lifecycle和SmartLifecycle的使用以及二者的区别
+
+1.定义Lifecycle和smartLifecycle的实现
+
+```java
+public class LifecycleBean implements Lifecycle {
+    
+    private static final Logger logger = LoggerFactory.getLogger(LifecycleBean.class);
+    
+    public boolean running = false;
+    
+    
+    @Override
+    public void start() {
+        logger.info("invoke LifecycleBean's start method");
+        this.running = true;
+    }
+
+    @Override
+    public void stop() {
+        logger.info("invoke LifecycleBean's start method");
+    }
+
+    @Override
+    public boolean isRunning() {
+        return this.running;
+    }
+}
+
+public class SmartLifecycleBean implements SmartLifecycle, Phased {
+
+    private static final Logger logger = LoggerFactory.getLogger(LifecycleBean.class);
+
+    public boolean running = false;
+    
+    @Override
+    public void start() {
+        logger.info("invoke SmartLifecycleBean‘s start method");
+        this.running = true;
+    }
+
+    @Override
+    public void stop() {
+        logger.info("invoke SmartLifecycleBean‘s stop method");
+    }
+
+    @Override
+    public boolean isRunning() {
+        return this.running;
+    }
+
+    @Override
+    public boolean isAutoStartup() {
+        return true;
+    }
+
+    @Override
+    public void stop(Runnable callback) {
+        logger.info("invoke callback method while stoping applicationContext");
+        stop();
+        callback.run();
+        this.running = false;
+    }
+
+    @Override
+    public int getPhase() {
+        return Integer.MAX_VALUE;
+    }
+}
+```
+
+2.创建配置类，并通过@Bean注解装载上面定义的两个类
+
+```java
+@Configuration
+public class LifecycleConfiguration {
+    
+    @Bean
+    public LifecycleBean lifecycleBean() {
+        return new LifecycleBean();
+    }
+
+    @Bean
+    public SmartLifecycleBean smartLifecycleBean() {
+        return new SmartLifecycleBean();
+    }
+}
+```
+
+3.创建启动类，获取上下文applicationContext，并显示调用start()和stop()
+
+```java
+@SpringBootApplication
+public class LifecycleApplication {
+
+    public static void main(String[] args) {
+        ConfigurableApplicationContext context = SpringApplication.run(LifecycleApplication.class, args);
+        // 显示调用start和stop，触发Lifecycle实现Bean
+        // context.start();
+        // context.stop();
+    }
+}
+```
+
+具体代码见模块
+
+[springboot-lifecycle]()
+
+**二者区别**
+
+SmartLifecycle接口实现的Bean会随着spring上下文的启动和销毁触发Bean的生命周期函数，如下图所示，spring上下文启动时，触发SmartLifecycleBean的start生命周期函数；spring上下文销毁时，触发SmartLifecycleBean的stop生命周期函数，同时还调用了销毁的回调函数
+
+![image-20220728172031861](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220728172031861.png)
+
+Lifecycle接口实现的Bean则需要通过Spring的上下文显示调用start()来触发其启动的生命周期函数
+
+![image-20220728172832979](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220728172832979.png)
+
+二者之所以存在这样的区别，主要是在于applicationContext执行`finishRefresh`阶段时，通过`LifecycleProcessor`触发`OnRefresh`或`OnClose`方法时，会去校验**autoStartupOnly**的值，为false时，才能触发Bean的生命周期函数；或者Bean是SmartLifecycle的实现，且isAutoStartup方法返回为true时，同样也会在applicationContext上下文刷新时，触发Bean的生命周期函数。具体原理可以参考模块**LifecycleBean生命周期管理源码分析**
+
+
+
+##### 触发ContextRefreshedEvent上下文刷新事件
+
+spring上下文在触发完LifecycleBean的生命周期函数后，便会发布`ContextRefreshedEvent`事件，通知相关监听器执行上下文刷新完成的事件，可以方便用户在beanFactory实例化非懒加载的单例模式的Bean后，确保能够获取到相应的Bean进行一些处理。
+
+```java
+// Publish the final event.
+publishEvent(new ContextRefreshedEvent(this));
+
+// invoke AbstractApplicationContext’s publishEvent
+protected void publishEvent(Object event, @Nullable ResolvableType eventType) {
+    Assert.notNull(event, "Event must not be null");
+
+    // Decorate event as an ApplicationEvent if necessary
+    // 将ContextRefreshedEvent封装成ApplicationEvent类型的事件
+    ApplicationEvent applicationEvent;
+    if (event instanceof ApplicationEvent) {
+        applicationEvent = (ApplicationEvent) event;
+    }
+    else {
+        applicationEvent = new PayloadApplicationEvent<>(this, event);
+        if (eventType == null) {
+            eventType = ((PayloadApplicationEvent<?>) applicationEvent).getResolvableType();
+        }
+    }
+
+    // Multicast right now if possible - or lazily once the multicaster is initialized
+    // 在上下文刷新阶段会触发initApplicationEventMulticaster初始化一个新的传播器供上下文启动完成后发布事件用，这时可能存在尚未初始化完成时，有事件触发的情况。此时，该触发的事件会缓存到earlyApplicationEvents中，待到init完成后的某个方法中在判断是否存在未触发的事件，补偿触发
+    if (this.earlyApplicationEvents != null) {
+        this.earlyApplicationEvents.add(applicationEvent);
+    }
+    else {
+        // 事件传播器已初始化完成，直接发布ContextRefreshedEvent
+        getApplicationEventMulticaster().multicastEvent(applicationEvent, eventType);
+    }
+
+    // Publish event via parent context as well...
+    // 是否存在父子容器的关系，若存在父容器，同样也会触发父容器中ContextRefreshedEvent的监听器
+    if (this.parent != null) {
+        if (this.parent instanceof AbstractApplicationContext) {
+            ((AbstractApplicationContext) this.parent).publishEvent(event, eventType);
+        }
+        else {
+            this.parent.publishEvent(event);
+        }
+    }
+}
+```
+
+在上述发布事件的过程中，主要包含以下几个步骤：
+
+- 包装`ContextRefreshedEvent`事件为`ApplicationEvent`类型
+- 判断当前的`ApplicationEventMulticaster`是否初始化完成，未完成则缓存`ContextRefreshedEvent`事件，待到初始化完成后，立即将缓存事件通知到相应的监听器；否则，立即通过传播器通知相应的监听器
+- 判断当前上下文是否存在父子容器的关系。若存在父容器的话，也会调用父容器中`ContextRefreshedEvent`的监听器
+
+
+
+###### 拓展：spring父子容器
+
+在以往的springmvc的项目中，存在有父子容器的概念，初始设计是为了确保单一职责，每个容器各自管理特定的Bean；同时，父子关系又能在各司其职的情况下，让子容器能够调用父容器中的Bean，而父容器却不能引用子容器的Bean。这样，就能将公共模块通过父子容器的方式提供给多个子容器引用。
+
+例如，常规的springmvc模式中，存在两个容器，分别是spring构建的`Root WebApplicationContext`父容器和`Servlet WebApplicationContext`子容器
+
+- **Root WebApplicationContext**：这是对J2EE三层架构中的`service`层、`dao`层进行配置，如业务`bean`，数据源(`DataSource`)等。通常情况下，配置文件的名称为`applicationContext.xml`。在`web`应用中，其一般通过`ContextLoaderListener`来加载。
+- **Servlet WebApplicationContext**：这是对J2EE三层架构中的`web`层进行配置，如控制器(`controller`)、视图解析器(`view resolvers`)等相关的bean。通过`spring mvc`中提供的DispatchServlet来加载配置，通常情况下，配置文件的名称为spring-servlet.xml。
+
+![image-20220729104206026](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220729104206026.png)
+
+父子容器构建大致流程如下：
+
+在spring调用`initWebApplicationContext`初始化上下文容器，然后通过web.xml中定义的dispatcher servlet的实现去加载DispatcherServlet，在调用init函数时会触发FramworkServlet的initServletBean方法，其中会构建一个ServletContext上下文，专门加载控制层、视图层的Bean。
+
+![image-20220729111734494](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220729111734494.png)
+
+在父子容器出现的同时，也延申出来了几个问题：
+
+- 为什么需要父子容器？
+
+- 是否可以把所有类都通过`Spring`容器来管理？（`Spring`的`applicationContext.xml`中配置全局扫描)
+
+- 是否可以把我们所需的类都放入`Spring-mvc`子容器里面来管理（`springmvc`的`spring-servlet.xml`中配置全局扫描）?
+
+- 同时通过两个容器同时来管理所有的类？
+
+针对上述几个问题，提出一些个人的看法：
+
+- **为什么需要父子容器？**父子容器的主要作用应该是划分框架边界。有点单一职责的味道。同时，也能保证构建了公共模块的父容器同时应用于多个子容器。在`J2EE`三层架构中，在`service`层我们一般使用`spring`框架来管理， 而在`web`层则有多种选择，如`spring mvc、struts`等。因此，通常对于`web`层我们会使用单独的配置文件。例如在上面的案例中，一开始我们使用`spring-servlet.xml`来配置web层，使用`applicationContext.xml`来配置`service`、`dao`层。如果现在我们想把`web`层从`spring mvc`替换成`struts`，那么只需要将`spring-servlet.xml`替换成`Struts`的配置文件`struts.xml`即可，而`applicationContext.xml`不需要改变。
+
+- **是否可以把所有类都通过Spring父容器来管理？（Spring的applicationContext.xml中配置全局扫描)**所有的类都通过父容器来管理的配置就是如下：
+
+  ```java
+  <context:component-scan  use-default-filters="false"  base-package="cn.com.test">
+      <context:include-filter type="annotation" expression="org.springframework.stereotype.Service" />
+      <context:include-filter type="annotation" expression="org.springframework.stereotype.Component" />
+      <context:include-filter type="annotation" expression="org.springframework.stereotype.Repository" />
+      <context:include-filter type="annotation" expression="org.springframework.stereotype.Controller" />
+  </context:component-scan>
+  ```
+
+  将所有的类统一由父容器管理后，就会导致请求项目时，request通过`DispatcherServlet`分发到Handler链中的某个处理器时，找不到对应的Controller(Controller层统一由父容器加载管理，而对`@RequestMapping`注解解析的`initHandlerMethod`函数是在子容器中执行的，此时就获取不到父容器中的Controller,因此就无法根据解析的`@RequestMapping`生成对应的Handler链，请求也就无法处理，会返回**404**)
+
+- **是否可以把我们所需的类都放入Spring-mvc子容器里面来管理（springmvc的spring-servlet.xml中配置全局扫描）?**这个是把包的扫描配置`spring-servlet.xml`中这个是可行的。为什么可行因为无非就是把所有的东西全部交给子容器来管理了，子容器执行了`refresh`方法，把在它的配置文件里面的东西全部加载管理起来来了。虽然可以这么做不过一般应该是不推荐这么去做的，一般人也不会这么干的。**如果你的项目里有用到事物、或者aop记得也需要把这部分配置需要放到Spring-mvc子容器的配置文件来，不然一部分内容在子容器和一部分内容在父容器,可能就会导致你的事物或者AOP不生效**。为什么不生效呢？**因为AOP切面定义的切点为子容器加载的Service类的话，在生成代理类的时候，父容器无法加载到子容器中加载的Service类，也就无法生成相应的代理类**
+
+- **同时通过两个容器同时来管理所有的类？**答案肯定是否定的。首先两个容器里面都放一份一样的对象，造成了内存浪费。再者的话子容器会覆盖父容器加载，本来可能父容器配置了事物生成的是代理对象，但是被子容器一覆盖，又成了原生对象。这就导致了你的事物不起作用了。
+
+
+
+###### springboot中的父子容器
+
+在上一模块中，主要讨论了springmvc模式下的父子容器的关系，那么来到springboot开发模式下是否还引用了这种父子容器的接口呢？答案是肯定的！springboot复用了spring的依赖库，但是却把springmvc中复杂的Root WebApplicationContext和Servlet WebApplicationContext两个父子容器整合成了一个上下文对象(**该上下文对象的类型由类加载器加载到的依赖的jar包来确定构建的上下文对象**)
+
+```java
+public static final String DEFAULT_CONTEXT_CLASS = "org.springframework.context."
+			+ "annotation.AnnotationConfigApplicationContext";
+
+public static final String DEFAULT_SERVLET_WEB_CONTEXT_CLASS = "org.springframework.boot."
+			+ "web.servlet.context.AnnotationConfigServletWebServerApplicationContext";
+
+public static final String DEFAULT_REACTIVE_WEB_CONTEXT_CLASS = "org.springframework."
+			+ "boot.web.reactive.context.AnnotationConfigReactiveWebServerApplicationContext";
+
+// 非web环境、web环境、reactive环境构建的上下文对象如下所示
+protected ConfigurableApplicationContext createApplicationContext() {
+    Class<?> contextClass = this.applicationContextClass;
+    if (contextClass == null) {
+        try {
+            switch (this.webApplicationType) {
+                case SERVLET:
+                    contextClass = Class.forName(DEFAULT_SERVLET_WEB_CONTEXT_CLASS);
+                    break;
+                case REACTIVE:
+                    contextClass = Class.forName(DEFAULT_REACTIVE_WEB_CONTEXT_CLASS);
+                    break;
+                default:
+                    contextClass = Class.forName(DEFAULT_CONTEXT_CLASS);
+            }
+        }
+        catch (ClassNotFoundException ex) {
+            throw new IllegalStateException(
+                "Unable create a default ApplicationContext, please specify an ApplicationContextClass", ex);
+        }
+    }
+    return (ConfigurableApplicationContext) BeanUtils.instantiateClass(contextClass);
+}
+```
+
+那么，springboot是在哪里用到了父子容器去管理Bean呢？
+
+在引用了**spring-cloud-context**的依赖包时，会基于启动类SpringApplication构建一个springcloud自身的上下文，且该上下文(容器)是作为springboot创建的上下文的父上下文存在的，创建并初始化的时机也是早于springboot构建的上下文的。
+
+那springcloud又是在何时、如何构建自己的应用上下文的呢？
+
+这里，我们需要引出一个关键的监听器`BootstrapApplicationListener`。它是定义在**spring-cloud-context**依赖中的spring.factories工厂文件中，指定了`ApplicationListener`的实现类为`BootstrapApplicationListener`。
+
+```xml
+# Application Listeners
+org.springframework.context.ApplicationListener=\
+org.springframework.cloud.bootstrap.BootstrapApplicationListener,\
+org.springframework.cloud.bootstrap.LoggingSystemShutdownListener,\
+org.springframework.cloud.context.restart.RestartListener
+```
+
+因此，在SpringApplication初始化时，在其构造函数中，会调用`setListeners((Collection) getSpringFactoriesInstances(ApplicationListener.class));`去加载spring.factories中定义的`ApplicationListener`实现并装配到listener集合中，而这其中也包含`BootstrapApplicationListener`。
+
+```java
+public SpringApplication(ResourceLoader resourceLoader, Class<?>... primarySources) {
+    this.resourceLoader = resourceLoader;
+    Assert.notNull(primarySources, "PrimarySources must not be null");
+    this.primarySources = new LinkedHashSet<>(Arrays.asList(primarySources));
+    this.webApplicationType = WebApplicationType.deduceFromClasspath();
+    setInitializers((Collection) getSpringFactoriesInstances(ApplicationContextInitializer.class));
+    setListeners((Collection) getSpringFactoriesInstances(ApplicationListener.class));
+    this.mainApplicationClass = deduceMainApplicationClass();
+}
+```
+
+然后在启动第二阶段`prepareEnvironment`创建env环境完成时，会发布`EnvironmentPrepared`事件，这里就会触发监听器`BootstrapApplicationListener`。
+
+```java
+public void onApplicationEvent(ApplicationEnvironmentPreparedEvent event) {
+    ConfigurableEnvironment environment = event.getEnvironment();
+    // 获取env环境变量'spring.cloud.bootstrap.enabled'，默认为true
+    // 该变量主要用于是否启用springcloud的上下文，即配置为false时就不会创建父容器，此时BootstrapApplicationListener也就不会再执行其他操作（本身的意义就是用于创建springcloud的上下文）
+    if ((Boolean)environment.getProperty("spring.cloud.bootstrap.enabled", Boolean.class, true)) {
+        if (!environment.getPropertySources().contains("bootstrap")) {
+            // 加载springcloud上下文启动配置文件：默认为bootstrap.yml/bootstrap.properties或是其他后缀的配置文件
+            ConfigurableApplicationContext context = null;
+            String configName = environment.resolvePlaceholders("${spring.cloud.bootstrap.name:bootstrap}");
+            Iterator var5 = event.getSpringApplication().getInitializers().iterator();
+			
+            // 初始加载springcloud时无ParentContextApplicationContextInitializer
+            while(var5.hasNext()) {
+                ApplicationContextInitializer<?> initializer = (ApplicationContextInitializer)var5.next();
+                if (initializer instanceof ParentContextApplicationContextInitializer) {
+                    context = this.findBootstrapContext((ParentContextApplicationContextInitializer)initializer, configName);
+                }
+            }
+
+            // 初始构建springcloud上下文
+            if (context == null) {
+                // 构建上下文核心实现
+                context = this.bootstrapServiceContext(environment, event.getSpringApplication(), configName);
+                event.getSpringApplication().addListeners(new ApplicationListener[]{new BootstrapApplicationListener.CloseContextOnFailureApplicationListener(context)});
+            }
+
+            this.apply(context, event.getSpringApplication(), environment);
+        }
+    }
+}
+```
+
+在`BootstrapApplicationListener`中主要做了三件事：
+
+- 获取env中的环境变量**spring.cloud.bootstrap.enabled**（默认为true），该变量主要用于是否启用springcloud的上下文，即配置为false时就不会创建父容器，此时BootstrapApplicationListener也就不会再执行其他操作（本身的意义就是用于创建springcloud的上下文）
+- 若**spring.cloud.bootstrap.enabled**配置为true，获取env中的**spring.cloud.bootstrap.name**，其对应着springcloud上下文中需要加载的启动配置文件的文件名前缀
+- 获取`ParentContextApplicationContextInitializer`,并从中获取**ConfigurableApplicationContext**（springcloude自身的父上下文）,这里肯定是加载不到的，因为这个上下文都还没有构建，且Initializer也并未创建；因此，会执行核心步骤`bootstrapServiceContext`来创建父上下文
+
+接下来主要分析创建springcloud上下文的核心步骤`bootstrapServiceContext`
+
+```java
+private ConfigurableApplicationContext bootstrapServiceContext(
+    ConfigurableEnvironment environment, final SpringApplication application,
+    String configName) {
+    StandardEnvironment bootstrapEnvironment = new StandardEnvironment();
+    MutablePropertySources bootstrapProperties = bootstrapEnvironment
+        .getPropertySources();
+    for (PropertySource<?> source : bootstrapProperties) {
+        bootstrapProperties.remove(source.getName());
+    }
+    // 获取启动配置文件的路径，默认为：classpath:/ 、classpath:/config/ 、 file:/ 、 file:/config/
+    String configLocation = environment
+        .resolvePlaceholders("${spring.cloud.bootstrap.location:}");
+    String configAdditionalLocation = environment
+        .resolvePlaceholders("${spring.cloud.bootstrap.additional-location:}");
+    Map<String, Object> bootstrapMap = new HashMap<>();
+    // 设置'spring.config.name'启动配置文件前缀名到env
+    bootstrapMap.put("spring.config.name", configName);
+    // if an app (or test) uses spring.main.web-application-type=reactive, bootstrap
+    // will fail
+    // force the environment to use none, because if though it is set below in the
+    // builder
+    // the environment overrides it
+    // 设置'spring.main.web-application-type'web应用类型到env
+    bootstrapMap.put("spring.main.web-application-type", "none");
+    if (StringUtils.hasText(configLocation)) {
+        bootstrapMap.put("spring.config.location", configLocation);
+    }
+    if (StringUtils.hasText(configAdditionalLocation)) {
+        bootstrapMap.put("spring.config.additional-location",
+                         configAdditionalLocation);
+    }
+    // 由于environment环境在多个容器中是共享的，因此需要针对不同的容器的环境变量进行分组，这里将父上下文的环境配置设定到bootstrap分组中，BOOTSTRAP_PROPERTY_SOURCE_NAME对应'bootstrap'
+    bootstrapProperties.addFirst(
+        new MapPropertySource(BOOTSTRAP_PROPERTY_SOURCE_NAME, bootstrapMap));
+    // 加载environment中的系统变量到bootstrap分组的env中
+    for (PropertySource<?> source : environment.getPropertySources()) {
+        if (source instanceof StubPropertySource) {
+            continue;
+        }
+        bootstrapProperties.addLast(source);
+    }
+    // TODO: is it possible or sensible to share a ResourceLoader?
+    // 基于启动类中的SpringApplication创建一个Builder
+    // 设定springcloud上下文激活使用的配置文件(bootstrap中是否存在spring.profiles.active激活使用的启动配置，不存在则用默认的bootstrap配置)
+    // 设定不打印Banner，并将bootstrap分组的env设置到environment中，即environment中包含一个key值为bootstrap的map类型的配置（springcloud上下文专用）
+    // 设定不注册销毁钩子函数，不打印启动信息，以及配置web应用类型为none
+    SpringApplicationBuilder builder = new SpringApplicationBuilder()
+        .profiles(environment.getActiveProfiles()).bannerMode(Mode.OFF)
+        .environment(bootstrapEnvironment)
+        // Don't use the default properties in this builder
+        .registerShutdownHook(false).logStartupInfo(false)
+        .web(WebApplicationType.NONE);
+    // 根据上述builder构建一个基于springboot应用中使用的SpringApplication为基础的cloud使用的SpringApplication
+    final SpringApplication builderApplication = builder.application();
+    if (builderApplication.getMainApplicationClass() == null) {
+        // gh_425:
+        // SpringApplication cannot deduce the MainApplicationClass here
+        // if it is booted from SpringBootServletInitializer due to the
+        // absense of the "main" method in stackTraces.
+        // But luckily this method's second parameter "application" here
+        // carries the real MainApplicationClass which has been explicitly
+        // set by SpringBootServletInitializer itself already.
+        builder.main(application.getMainApplicationClass());
+    }
+    if (environment.getPropertySources().contains("refreshArgs")) {
+        // If we are doing a context refresh, really we only want to refresh the
+        // Environment, and there are some toxic listeners (like the
+        // LoggingApplicationListener) that affect global static state, so we need a
+        // way to switch those off.
+        builderApplication
+            .setListeners(filterListeners(builderApplication.getListeners()));
+    }
+    // 添加配置类BootstrapImportSelectorConfiguration，主要用于后续通过ImportSelector加载BootstrapConfiguration配置类的实现PropertySourceBootstrapConfiguration、EncryptionBootstrapConfiguration、ConfigurationPropertiesRebinderAutoConfiguration、PropertyPlaceholderAutoConfiguration，通过这些配置类来加载一些自动装配的Bean
+    builder.sources(BootstrapImportSelectorConfiguration.class);
+    // 执行springcloud上下文的启动过程，此时springboot的子上下文才执行到第二阶段prepareEnvironment；子上下文要待到父上下文容器完成启动后，才会就行执行；若不是这样的话，子上下文加载parentContext时，可能会失败，因此放在父上下文容器完全启动后执行
+    final ConfigurableApplicationContext context = builder.run();
+    // gh-214 using spring.application.name=bootstrap to set the context id via
+    // `ContextIdApplicationContextInitializer` prevents apps from getting the actual
+    // spring.application.name
+    // during the bootstrap phase.
+    context.setId("bootstrap");
+    // Make the bootstrap context a parent of the app context
+    // 设定springcloud的上下文为springboot上下文的父上下文容器
+    addAncestorInitializer(application, context);
+    // It only has properties in it now that we don't want in the parent so remove
+    // it (and it will be added back later)
+    bootstrapProperties.remove(BOOTSTRAP_PROPERTY_SOURCE_NAME);
+    // 合并父子上下文中相同的属性
+    mergeDefaultProperties(environment.getPropertySources(), bootstrapProperties);
+    return context;
+}
+```
+
+上述代码中springcloud会初始化自身的SpringApplication上下文，并调用`run`方法启动整个上下文，然后将其设定为springboot上下文的父上下文。具体启动过程同springboot启动过程一致，这里不再分析，有需要可以查看前面的分析过程。
+
+
+
+### 七.刷新后操作
+
+spring上下文刷新完成后整个启动过程就已经基本完成后，后续还有几个监听事件以及扩展等
+
+```java
+// 刷新后操作，定义一个空的模版给其他子类实现重写
+afterRefresh(context, applicationArguments);
+// 停止时间监控，其中保存了整个上下文启动的耗时
+stopWatch.stop();
+// 是否打印启动耗时，默认为true
+if (this.logStartupInfo) {
+    new StartupInfoLogger(this.mainApplicationClass).logStarted(getApplicationLog(), stopWatch);
+}
+// 发布ApplicationStartedEvent启动完成事件
+listeners.started(context);
+// 调用ApplicationRunner和CommandLineRunner接口实现，完成在应用启动成功后的操作
+callRunners(context, applicationArguments);
+```
+
+这里我们主要分析一下这个callRunners扩展使用及原理
+
+#### callRunners
+
+首先，其会去BeanFactory中加载`ApplicationRunner` 和`CommandLineRunner`的实现，根据Ordered接口实现进行排序后，触发各个Runner的run实现
+
+```java
+private void callRunners(ApplicationContext context, ApplicationArguments args) {
+    List<Object> runners = new ArrayList<>();
+    // 从BeanFactory中获取ApplicationRunner和CommandLineRunner类型的Bean
+    runners.addAll(context.getBeansOfType(ApplicationRunner.class).values());
+    runners.addAll(context.getBeansOfType(CommandLineRunner.class).values());
+    // 根据Ordered接口实现进行排序
+    AnnotationAwareOrderComparator.sort(runners);
+    // 触发所有Runner的run实现
+    // 注意：ApplicationRunner调用先于CommandLineRunner
+    for (Object runner : new LinkedHashSet<>(runners)) {
+        if (runner instanceof ApplicationRunner) {
+            callRunner((ApplicationRunner) runner, args);
+        }
+        if (runner instanceof CommandLineRunner) {
+            callRunner((CommandLineRunner) runner, args);
+        }
+    }
+}
+```
+
+从上述代码来看，spring上下文会在启动完成后，从IOC工厂中获取`ApplicationRunner`和`CommandLineRunner`类型的Bean，并触发其run方法的实现。因此，开发人员想要在应用启动完成后执行一些操作的话，只需要实现`ApplicationRunner`和`CommandLineRunner`接口，并将其声明为Bean即可。
+
+##### ApplicationRunner & CommandLineRunner使用
+
+这里主要演示ApplicationRunner和CommandLineRunner在应用启动完成后执行自定义操作的扩展实现
+具体实现如下所示：
+
+```
+* 1.分别定义一个ApplicationRunner、CommandLineRunner接口的实现类CustomApplicationRunner、CommandLineRunner
+* 2.实现Ordered接口，保证同一类型的Runner的触发顺序
+* 3.通过@Component组件声明为Bean；
+*   或者定义一个配置类，然后在配置类中定义一个返回类型为Runner的方法，并使用@Bean注解声明；
+*   亦或是在配置类上声明@Import注解，通过指定的ImportSelector调用selectImport返回指定类型的BeanName
+* 4.定义两个Runner中的实现
+* 5.启动应用查看两个Runner的调用（ApplicationRunner 早于 CommandLineRunner调用）
+```
+
+调用结果：
+
+![image-20220801175433207](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220801175433207.png)
