@@ -18,48 +18,48 @@
     public static void main(String[] args) {
         SpringApplication.run(MarsApplication.class, args);
     }
-    public SpringApplication(Object... sources) {
-        //初始化
-        initialize(sources);
-    }
+	// 在SpringApplication的构造函数中，主要做了以下几件事情
+	// 1.设置应用上下文类型：SERVLET、REACTIVE、NONE
+	// 2.通过类加载器加载所有jar中的spring.factories中的ApplicationContextInitializer实现类，并缓存到initializers中
+	// 3.通过类加载器加载spring.factories中的ApplicationListener实现类，并缓存到listeners中
+	// 4.设定启动类
+    public SpringApplication(ResourceLoader resourceLoader, Class<?>... primarySources) {
+		this.resourceLoader = resourceLoader;
+		Assert.notNull(primarySources, "PrimarySources must not be null");
+		this.primarySources = new LinkedHashSet<>(Arrays.asList(primarySources));
+        //设置应用上下文类型：SERVLET、REACTIVE、NONE
+		this.webApplicationType = WebApplicationType.deduceFromClasspath();
+        //加载spring.factories中定义的ApplicationContextInitializer的实现类，缓存到上下文的initializers中，并在准备容器prepareContext阶段，触发initializer进行初始化操作，装载一些特定的变量到environment环境中
+		setInitializers((Collection) getSpringFactoriesInstances(ApplicationContextInitializer.class));
+        //加载spring.factories中定义的的ApplicationListener的实现，缓存到上下文的listeners中，在启动过程中EventMulticaster事件传播器发布事件时，通知上下文中的listeners集合中的监听器，触发监听事件
+		setListeners((Collection) getSpringFactoriesInstances(ApplicationListener.class));
+        //设定启动类
+		this.mainApplicationClass = deduceMainApplicationClass();
+	}
 ```
 
-初始化时，会先进行区分环境：非web环境、web环境、reactive环境三种。如下：
+在调用deduceFromClasspath设定应用环境时，会先进行区分环境：非web环境、web环境、reactive环境三种。如下：
+
+来看一下具体环境判断的deduceFromClasspath()方法：
 
 ```java
-    private void initialize(Object[] sources) {
-        if (sources != null && sources.length > 0) {
-            this.sources.addAll(Arrays.asList(sources));
-        }
-        //设置servlet环境
-        this.webEnvironment = deduceWebEnvironment();
-        //获取ApplicationContextInitializer，也是在这里开始首次加载spring.factories文件
-        setInitializers((Collection) getSpringFactoriesInstances(
-                ApplicationContextInitializer.class));
-        //获取监听器，这里是第二次加载spring.factories文件
-        setListeners((Collection) getSpringFactoriesInstances(ApplicationListener.class));
-        this.mainApplicationClass = deduceMainApplicationClass();
+static WebApplicationType deduceFromClasspath() {
+    // 判断是否引用了Reactive相关的class文件，且不存在servlet相关的class文件，则设定环境为Reactive应用
+    if (ClassUtils.isPresent(WEBFLUX_INDICATOR_CLASS, null) && !ClassUtils.isPresent(WEBMVC_INDICATOR_CLASS, null) && !ClassUtils.isPresent(JERSEY_INDICATOR_CLASS, null)) {
+        return WebApplicationType.REACTIVE;
     }
+    for (String className : SERVLET_INDICATOR_CLASSES) {
+        // 不存在servlet相关class文件，则设定为非web应用
+        if (!ClassUtils.isPresent(className, null)) {
+            return WebApplicationType.NONE;
+        }
+    }
+    // 默认设定为web应用（也是使用最为广泛的，引入web-starter依赖即可）
+    return WebApplicationType.SERVLET;
+}
 ```
 
-来看一下具体环境判断的deduceWebEnvironment()方法：
-
-```java
-    private WebApplicationType deduceWebApplicationType() {
-        if (ClassUtils.isPresent(REACTIVE_WEB_ENVIRONMENT_CLASS, null)
-                && !ClassUtils.isPresent(MVC_WEB_ENVIRONMENT_CLASS, null)) {
-            return WebApplicationType.REACTIVE;
-        }
-        for (String className : WEB_ENVIRONMENT_CLASSES) {
-            if (!ClassUtils.isPresent(className, null)) {
-                return WebApplicationType.NONE;
-            }
-        }
-        return WebApplicationType.SERVLET;
-    }
-```
-
-这里主要是通过判断REACTIVE相关的字节码是否存在，如果不存在，则web环境即为SERVLET类型。这里设置好web环境类型，在后面会根据类型初始化对应环境。
+这里主要是通过判断REACTIVE相关的字节码是否存在，如果不存在，则web环境即为SERVLET类型。**这里设置好web环境类型，在后面会根据类型初始化对应环境。**
 
 ApplicationContextInitializer是spring组件spring-context组件中的一个接口，**主要是spring ioc容器刷新之前的一个回调接口，用于处于自定义逻辑**。
 
