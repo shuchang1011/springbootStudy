@@ -27,6 +27,7 @@
         <module>springboot-messageSource</module>
         <module>springboot-lifecycle</module>
         <module>springboot-runners</module>
+        <module>springboot-applicationContext-custom</module>
     </modules>
 
     <properties>
@@ -56,6 +57,11 @@
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-core</artifactId>
             <version>${logback.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>24.0-jre</version>
         </dependency>
     </dependencies>
 

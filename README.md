@@ -533,7 +533,7 @@ private final List<PropertySource<?>> propertySourceList = new CopyOnWriteArrayL
 
 `spring.profiles.include`：使用该参数后，可以在引用了某个配置文件的基础上，在引用其他的配置文件，后引用的会覆盖前面引用的。
 
-继续跟进load方法后，发现它会默认去以下位置去加载配置文件
+继续跟进load方法后，发现它会默认去以下位置去**逆序**加载配置文件，（实际加载是按照逆序的，先加载的优先级更高https://ynfatal.github.io/2018/09/20/SpringBoot2/SpringBoot2%E7%AC%AC%E4%BA%8C%E7%AF%87SpringBoot%E9%85%8D%E7%BD%AE%E8%AF%A6%E8%A7%A3/）
 
 `"classpath:/,classpath:/config/,file:./,file:./config/"`
 
@@ -543,6 +543,10 @@ private final List<PropertySource<?>> propertySourceList = new CopyOnWriteArrayL
 
 ![image-20211224171846655](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224171846655.png)
 
+![image-20230704231649513](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20230704231649513.png)
+
+上述加载位置会做逆序处理，也就是说会按照`"classpath:/,classpath:/config/,file:./,file:./config/"`逆序加载配置文件，且先加载的优先级更高(后续会讲到，凡是加载过的就不会加载了)，未加载到的会互补
+
 接下来仔细看load函数中的一个DocumentConsumer类型入参对象
 
 ![image-20211224172816706](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211224172816706.png)
@@ -551,7 +555,7 @@ private final List<PropertySource<?>> propertySourceList = new CopyOnWriteArrayL
 
 因此，在springboot2.4.0之前，还是通过ConfigFileApplicationListener加载配置文件的时候，配置优先级是按照文件加载顺序来实现的！
 
-springboot2.4.0前后配置文件加载机制的具体差异详见：https://blog.csdn.net/weixin_42189048/article/details/111767740
+springboot2.4.0前后配置文件加载机制的具体差异详见：https://yangguirong.com/archives/springboot24-ji-yi-hou-pei-zhi-wen-jian-de-chu-li-luo-ji
 
 ------
 
@@ -656,7 +660,29 @@ context = createApplicationContext();
 
 ![image-20211228103106710](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20211228103106710.png)
 
+## 2）自定义应用上下文
+
+在上述源码解析过程中，我们可以看到创建上下文时，首先会判断是否有设置`applicationContextClass`，然后才是根据类型来决定初始化的web容器。
+
+因此，我们可以在创建`SpringApplication`时，就装配好指定的`applicationContextClass`，来达到启动时采用自定义的应用上下文的目的，从而完成启动过程中各个阶段的一些操作。例如，设置环境变量，提前加载bean实现等等。
+
+以下是实现步骤：
+
+```
+自定义应用上下文，可以继承默认的web上下文，完成一些额外的操作。例如，提前装配一些bean，修改环境变量等等；在web
+实现方式：
+1.继承web应用上下文AnnotationConfigServletWebServerApplicationContext，自定义实现CustomAnnotationServletWebServerApplicationContext，并重写相关方法完成自定义操作
+2.在启动类中，通过SpringApplication装配指定的自定义上下文。
+	原理：在创建上下文阶段createApplicationContext实现中，首先会判断是否设置了应用上下文的实现类，如果没有设置，则会根据webApplicationType来决定		初始化的web上下文
+	故，可以在创建SpringApplication.setApplicationContextClass来决定加载的上下文
+	注意：需继承web上下文，否则web应用容器无法正常初始化启动
+```
+
+代码见模块[springboot-exception-analyzer]()
+
 ------
+
+
 
 ## 四：报告错误信息
 
@@ -1631,7 +1657,7 @@ public void refresh() throws BeansException, IllegalStateException {
 
 在这一步骤中，主要的是`initPropertySources()`和`getEnvironment.validateRequireProperties()`
 
-其中`initPropertySources()`是springboot提供的一个扩展点，它可以方便用户继承AbstractApplicationContext的子类并实现该方法来达到自定义设置属性到Environment中
+其中`initPropertySources()`是springboot提供的一个扩展点，它可以方便用户继承AbstractApplicationContext的子类并实现该方法来达到自定义设置属性到Environment中；
 
 例如，在web应用中，它会去调用`GenericWebApplicationContext`的相应方法
 
@@ -1644,15 +1670,47 @@ protected void initPropertySources() {
 }
 ```
 
+还有一种较为常见的应用，就是通过`Environment.setRequiredProperties`设置Environment中的以下必备属性。
+
+为什么说这个比较常用呢？因为在`initPropertySources`方法后，会立刻调用`validateRequiredProperties`方法去校验Environment中是否存在必备属性为设置的情况。
+
 #### 1.1 扩展initPropertySources()实现
 
 作用：扩展initPropertySources()主要是为了在准备刷新容器时，往Environment环境中添加一些自定义的属性；相对于在第二阶段-准备环境过程中，通过实现EnvironmentPostProcessors接口来说，二者作用一致，但是执行的时机不一样。
+
+注意：仅仅扩展上下文容器还不行，需要在启动类中通过setApplicationContext方法来设置使用自定义上下文！！！否则，还是会默认按照web应用类型来加载对应的应用上下文
+
+```java
+protected ConfigurableApplicationContext createApplicationContext() {
+    Class<?> contextClass = this.applicationContextClass;
+    if (contextClass == null) {
+        try {
+            switch (this.webApplicationType) {
+                case SERVLET:
+                    contextClass = Class.forName(DEFAULT_SERVLET_WEB_CONTEXT_CLASS);
+                    break;
+                case REACTIVE:
+                    contextClass = Class.forName(DEFAULT_REACTIVE_WEB_CONTEXT_CLASS);
+                    break;
+                default:
+                    contextClass = Class.forName(DEFAULT_CONTEXT_CLASS);
+            }
+        }
+        catch (ClassNotFoundException ex) {
+            throw new IllegalStateException(
+                "Unable create a default ApplicationContext, please specify an ApplicationContextClass", ex);
+        }
+    }
+    return (ConfigurableApplicationContext) BeanUtils.instantiateClass(contextClass);
+}
+```
 
 实现步骤：
 
 ```java
 1.因为我们是以web应用的方式启动springboot，因此，可以继承其实现类AnnotationConfigServletWebApplicationContext，并重写重写initPropertySources
 2.在initPropertySources方法中，往环境Environment中设置必要属性，启动测试是否生效
+3.在启动类中，通过SpringApplication.setApplicationContext设置自定义容器
 ```
 
 具体实现见代码模块
@@ -1892,11 +1950,111 @@ protected void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactor
 }
 ```
 
+注意：
+
+这里的`postProcessBeanFactory`需要和后续的`BeanFactoryPostProcessor`实现中的`postProcessBeanFactory`区分开！
+
+前者的实现，主要是针对于上下文容器来调用的，他是在加载所有BeanDefinition之前去装配一些必要的Bean，或者是完成一下必要的初始化操作等等；而后者的调用则是在下一个步骤`invokeBeanFactoryPostProcessors`中，由`BeanDefinitionRegistryPostProcessor`完成了所有的BeanDefinition的加载过程后，通过`BeanFactoryPostProcessor`的`postProcessBeanFactory`完成Bean实例化前的修改！二者作用时机不同，构建的意义也不同。
+
+相对来说，使用更为频繁的是后者，可以在Bean实例化前，获取一些环境变量，或者通过加载的一些类判断是否允许初始化等等；而前者需要自定义实现应用上下文，有点重复造轮子的意思。当然了，如果有需要做定制，类似于web容器上下文类似的，可以自定义实现，然后提前注册一些PostProcessors来做Bean定义文件的加载，Bean实例化的处理等操作。
+
+针对前者，我这边也给了一个案例，主要是提前装配并实例化了一些Bean
+
+代码见模块[springboot-applicationContext-custom]()
+
+代码中其他知识扩展点：
+
+#### BeanFactory注册Bean的几种方式：BeanDefinition、Bean、Dependecy的注册
+
+在日常注册Bean时，我们都是通过@Component，或者其衍生的注解来实现Bean的注册。除了这个方式外，BeanFactory还提供了其他的几种编码的方式，ru下所示：
+
+- **registerBeanDefinition（BeanDefinition 的注册）**
+
+  通过`BeanFactory.registerBeanDefinition`可以进行编码的方式注册Bean的定义文件到工厂中，其可以通过spring的各个阶段的扩展点进行注册。
+
+  BeanDefinition的扫描装配见`5.2.1ConfigurationClassPostProcessor详解`。简单来说，通过`registerBeanDefinition`注册的Bean的定义文件，会同refresh阶段的`invokeBeanFactoryPostProcessor`阶段通过`ConfigurationClassPostProcessor`扫描后的Bean的定义文件一同装配到BeanFactory的map缓存中，然后等待后续将BeanDefinition实例化为Bean对象
+
+  使用方式：
+
+  在`BeanFactoryPostProcessor`的postProcessBeanFactory中，通过`BeanDefinitionBuilder`创建一个BeanDefinition，然后注册到BeanFactory工厂中；亦可以在之前的其他阶段进行注册。
+
+  代码实现，见模块[springboot-applicationContext-custom]()的`CustomAnnotationServletWebServerApplicationContext`的`postProcessBeanFactory`实现
+
+- **registerResolvableDependency**
+
+  `ConfigurableListableBeanFactory#registerResolvableDependency()`会向容器中注册一个可解析的依赖。通过这种方式注册的对象会添加到BeanFactory的`resolvableDependencies`缓存对象中。
+
+  ```java
+  public void registerResolvableDependency(Class<?> dependencyType, Object autowiredValue) {
+       Assert.notNull(dependencyType, "Dependency type must not be null");
+       if (autowiredValue != null) {
+           if (!(autowiredValue instanceof ObjectFactory || dependencyType.isInstance(autowiredValue))) {
+               throw new IllegalArgumentException("Value [" + autowiredValue +
+                       "] does not implement specified dependency type [" + dependencyType.getName() + "]");
+           }
+           // 将指定的类型 和 对象 添加到 resolvableDependencies 中
+           this.resolvableDependencies.put(dependencyType, autowiredValue);
+       }
+   }
+  ```
+
+  
+
+  在使用`@Autowired`或者`@Resource`进行依赖注入时，会优先读取`resolvableDependencies` 。倘若没有找到相关依赖，才会去容器中查找装配的Bean（**在存在多个相同类型的Bean实例时，可以通过改方法，指定对应类型使用哪一个Bean，从而解决依赖注入时存在重复类型Bean的报错；亦或是可以通过@Primary注解声明在优先使用的Bean的类上，来达到优先使用的目的；亦或是通过@Qualifier指定注入依赖Bean名称**）。
+
+  
+
+  注意：上述方式中装配的Bean依赖并不能通过BeanFactory.getBean()读取到（Bean被加载到`resolvableDependencies`中），而是需要通过`@Autowired`或者`@Resource`依赖注入的方式获取。
+
+  样例：
+
+  在`prepareBeanFactory`阶段，BeanFactory都会将一些常用的Bean注册到`resolvableDependencies`中，方便在通过依赖注入时，能够优先加载对应的实现
+
+  ```java
+  // AbstractApplicationContext#prepareBeanFactory()  
+  beanFactory.registerResolvableDependency(BeanFactory.class, beanFactory);
+  beanFactory.registerResolvableDependency(ResourceLoader.class, this);
+  beanFactory.registerResolvableDependency(ApplicationEventPublisher.class, this);
+  beanFactory.registerResolvableDependency(ApplicationContext.class, this);
+  ```
+
+  在代码模块[springboot-applicationContext-custom]()的实现中，提供了以下案例：
+
+  ```
+  // 案例一：依赖注入的方式获取registerResolvableDependency注册的Bean
+  1.在自定义上下文的postProcessBeanFactory实现中，注册CBean到`resolvableDependencies`
+  2.构建TestService，并通过@Autowired的方式注入CBean，演示CBean通过依赖注入的方式进行获取
+  3.在启动类中，通过getBean的形式尝试获取CBean，从而演示了通过**registerResolvableDependency**方式注册的Bean是无法通过BeanFactory.getBean获取到的问题
+  ```
+
+  ```
+  // 案例二：通过registerResolvableDependency解决重复类型Bean的依赖注入问题
+  1.构建接口DuplicateInterface，并创建两个实现Bean,DuplicateA和DuplicateB
+  2.在自定义BeanFactoryPostProcessor的postProcessBeanFactory实现中注册duplicateA到resolvableDependencies
+  3.在TestService中，通过依赖注入的方式，注入DuplicateInterface类型Bean
+  4.方法中调用DuplicateInterface，可以看出其实际应用的是duplicateA，且不会出现重复类型Bean的异常
+  ```
+
+  
+
+- **registerSingleton**
+
+  `SingletonBeanRegistry#registerSingleton()`通过指定的 name 将给定的对象作为单例Bean注册到容器中。**由于给定的 bean 是完全初始化好的，所以它不会执行任何初始化回调**。比如：`InitializingBean#afterPropertiesSet();`给定实例也不会收到任何销毁回调（如`DisposableBean`的销毁方法）。
+
+  在代码模块[springboot-applicationContext-custom]()的实现中，提供了以下案例：
+
+  ```
+  1.在自定义上下文的postProcessBeanFactory实现中，注册一个新的ABean的单例Bean对象；
+  2.在自定义BeanPostProcessor的postProcessBeforeInitialization和postProcessAfterInitialization实现中，检测ABean是否会执行Bean的初始化声明周期处理；
+  ```
+
+
+
 ### 5）关键步骤--invokeBeanFactoryPostProcessors调用Bean工厂的后置处理器
 
 紧接着就是最为关键的一步，`invokeBeanFactoryPostProcessors`（bean 都还没有初始化，可以操作 beanFacotry 达到修改 bean 的定义，添加 bean 定义的效果）
 
-`invokeBeanFactoryPostProcessors`方法，负责激活各种 BeanFactory 处理器，以及两个核心接口的调用：
+`invokeBeanFactoryPostProcessors`方法，负责激活各种 BeanFactory 处理器，以及两个核心接口的调用，前者早于后者调用，且前者会先进行beanDefinition的注册(新增)：
 
 - ```
   BeanDefinitionRegistryPostProcessor
@@ -1910,11 +2068,15 @@ protected void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactor
 
   - 实际完成了对其实现类中`postProcessBeanFactory`方法的调用，**在bean实例化前修改bean的属性**
 
+**注意：为什么不推荐去自定义实现`BeanDefinitionRegistryPostProcessor`实现新增、修改Bean定义呢？因为后续的ConfigurationClassPostProcessor已经为我们加载好了绝大多数的Bean定义，无需实现相关功能；而提供给我们自定义实现BeanFactoryPostProcessor去修改Bean定义就可以满足绝大部分功能了**
+
 在调用BeanFactoryPostProcessors前，我们得清楚它的来源，主要有以下两点：
 
-1 . `AbstractApplicationContext` 的 `beanFactoryPostProcessors` 成员，可以通过编程的方式在 `ApplicationContext `refresh 之前通过 `addBeanFactoryPostProcessor` 加入； 
+1 . `AbstractApplicationContext` 的 `beanFactoryPostProcessors` 成员，可以通过编程的方式在 `ApplicationContext `refresh 之前通过 `addBeanFactoryPostProcessor` 加入；
 
-2 .`beanFactory` 中注册的 `BeanFactoryPostProcessor` 类型的 bean
+ 该`BeanFactoryPostProcessors`如果类型为`BeanDefinitionRegistryPostProcessor`，则会在`invokeBeanFactoryPostProcessors`方法的一开始触发`postProcessBeanDefinitionRegistry`方法进行beanDefinition的新增或修改
+
+2 .`beanFactory` 中注册的 `BeanFactoryPostProcessor` 类型的 bean。该`BeanFactoryPostProcessor`是在`BeanDefinitionRegistryPostProcessor`将@Component声明的BeanDefinition注册到工厂后进行实例化的。
 
 接下来，我们结合源码分析一下这一步具体做了哪些事情
 
@@ -1944,6 +2106,8 @@ protected void invokeBeanFactoryPostProcessors(ConfigurableListableBeanFactory b
 
 这也是spring留给用户的扩展点之一，可以通过`ApplicationContext.addBeanFactoryPostProcessor`来完成`BeanFactoryPostProcessors`的注入；其支持在refresh前的各个阶段，例如：
 
+
+
 #### 5.1 自定义实现BeanFactoryPostProcessor
 
 1.自定义一个监听器，在创建好上下文对象的阶段后，通过实现`ApplicationContextAware`接口，来获取我们的应用上下文，然后在事件的触发函数中，调用`addBeanFactoryPostProcessor`方法，来完成自定义`BeanFactoryPostProcessor`的注入过程
@@ -1956,14 +2120,20 @@ protected void invokeBeanFactoryPostProcessors(ConfigurableListableBeanFactory b
 
 [springboot-beanFactory-postProcessor](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-beanFactory-postProcessor)
 
+
+
+**`invokeBeanFactoryPostProcessors`**
+
 接下来，就会调用后置处理器的关键步骤`invokeBeanFactoryPostProcessors`，以下代码，我们分为七个步骤讲解：
 
-1.入参中的`BeanFactoryPostProcessor`，按照是否实现了`BeanDefinitionRegistryPostProcessor`，分别放入两个集合：`registryProcessors`和`regularPostProcessors`；并调用`postProcessBeanDefinitionRegistry`
+1.入参中的`BeanFactoryPostProcessor`，按照是否实现了`BeanDefinitionRegistryPostProcessor`，分别放入两个集合：`registryProcessors`和`regularPostProcessors`；并调用`BeanDefinitionRegistryPostProcessor`的`postProcessBeanDefinitionRegistry`方法执行beanDefinition的注册；而`BeanFactoryPostProcessor`则在后续`BeanDefinitionRegistryPostProcessor`完成BeanDefinition注册过程后执行修改BeanDefinition;
 
 2.找出所有实现了`BeanDefinitionRegistryPostProcessor`接口和`PriorityOrdered`接口的bean，放入`registryProcessors`集合，放入根据`PriorityOrdered`接口来排序，然后这些bean会被`invokeBeanDefinitionRegistryPostProcessors`方法执行；
 
 3.找出所有实现了`BeanDefinitionRegistryPostProcessor`接口和`Ordered`接口的bean，放入`registryProcessors`集合，放入根据`PriorityOrdered`接口来排序，然后这些bean会被`invokeBeanDefinitionRegistryPostProcessors`方法执行；
+
 4.对于那些实现了`BeanDefinitionRegistryPostProcessor`接口，但是没有实现`PriorityOrdered`和`Ordered`的bean也被找出来，然后这些bean会被`invokeBeanDefinitionRegistryPostProcessors`方法执行；
+
 5.入参中的`BeanFactoryPostProcessor`，没有实现`BeanDefinitionRegistryPostProcessor`的那些bean，被`invokeBeanDefinitionRegistryPostProcessors`;
 
 6.找出实现了`BeanFactoryPostProcessor`接口的bean，**注意这里已将面实现了`BeanDefinitionRegistryPostProcessor`接口的bean给剔除了**，将这些bean分为三类：实现了`PriorityOrdered`接口的放入`priorityOrderedPostProcessors`，实现了`Ordered`接口的放入`orderedPostProcessorNames`，其他的放入`nonOrderedPostProcessorNames`，**这段代码是关键，因为我们自定义的实现BeanFactoryPostProcessor接口的bean就会在此处被找出来。**
@@ -2095,6 +2265,8 @@ public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
 ![image-20220119105311013](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220119105311013.png)
 
 ###### 3.配置类的校验
+
+**以下是`processConfigBeanDefinitions(registry)`的解析，实际上就是获取BeanFactory中当前已注册的启动类，并解析校验启动类上声明的配置类注解@Configuration以及@Componnet,@ComponentScan,@Import注解等，然后调用parse解析去加载配置类**
 
 通过BeanDefinitionRegistry查找当前Spring容器中所有BeanDefinition，并通过`ConfigurationClassUtils.checkConfigurationClassCandidate()` 检查BeanDefinition是否为 **“完全配置类”** 或 **“简化配置类”**，并对配置类做标记，放入集合待后续处理
 
@@ -5244,3 +5416,143 @@ private void callRunners(ApplicationContext context, ApplicationArguments args) 
 调用结果：
 
 ![image-20220801175433207](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20220801175433207.png)
+
+
+
+
+
+## 补充
+
+### Main函数中执行完run方法后，为什么程序不会直接退出呢？
+
+在思考这个问题前，得先明白什么时候java应用会正常退出呢？无非以下几种情况：
+
+- System.exit()
+- Runtime.exit()
+- 应用中的所有非daemon线程全都执行完毕
+
+在springboot启动过程中，是不存在调用前两种函数的情况的。那么，程序能一直运行，就一定存在着其他的非守护线程在持续运行。
+
+通过springboot的启动日志可以看到，其停止在tomcat容器启动后。那么，我们可以推测，是由于tomcat容器一直在阻塞监听8080端口，从而保证程序能正常运行
+
+![image-20230811102649256](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20230811102649256.png)
+
+在前面refresh节点的OnRefresh操作中提及过，其会初始化`ApplicationContext`的子类。而在我们引入的web依赖中，其默认的子类实现便是`ServletWebServerApplicationContext`.
+
+在`ServletWebServerApplicationContext`的`OnRefresh`实现中，会通过`ServletWebServerFactory`工厂去创建webServer容器。
+
+```java
+protected void onRefresh() {
+    // 调用父类的实现
+    super.onRefresh();
+    try {
+        // 创建WebServer容器(Tomcat等)，ServletContext上下文，初始化properties资源
+        createWebServer();
+    }
+    catch (Throwable ex) {
+        throw new ApplicationContextException("Unable to start web server", ex);
+    }
+}
+
+// GenericApplicationContext实现
+protected void onRefresh() {
+    // 设置默认国际化主题资源
+    this.themeSource = UiApplicationContextUtils.initThemeSource(this);
+}
+```
+
+而依赖中默认引入的tomcat容器，所以后续会触发`TomcatServletWebServerFactory.getWebServer`来构建webServer容器
+
+```java
+@Override
+public WebServer getWebServer(ServletContextInitializer... initializers) {
+   if (this.disableMBeanRegistry) {
+      Registry.disableRegistry();
+   }
+   Tomcat tomcat = new Tomcat();
+   File baseDir = (this.baseDirectory != null) ? this.baseDirectory : createTempDir("tomcat");
+   tomcat.setBaseDir(baseDir.getAbsolutePath());
+   Connector connector = new Connector(this.protocol);
+   connector.setThrowOnFailure(true);
+   tomcat.getService().addConnector(connector);
+   customizeConnector(connector);
+   tomcat.setConnector(connector);
+   tomcat.getHost().setAutoDeploy(false);
+   configureEngine(tomcat.getEngine());
+   for (Connector additionalConnector : this.additionalTomcatConnectors) {
+      tomcat.getService().addConnector(additionalConnector);
+   }
+   prepareContext(tomcat.getHost(), initializers);
+   // 初始化Tomcat容器
+   return getTomcatWebServer(tomcat);
+}
+```
+
+在`TomcatWebServer`的`initialize`方法中，会调用`startDaemonAwaitThread`来保证tomcat容器中始终正常运行(tomcat容器不像jetty容器，其均是以守护线程的形式运行，故需要执行一个非守护线程阻塞运行，避免tomcat容器关闭)
+
+```java
+public TomcatWebServer(Tomcat tomcat, boolean autoStart) {
+   Assert.notNull(tomcat, "Tomcat Server must not be null");
+   this.tomcat = tomcat;
+   this.autoStart = autoStart;
+   initialize();
+}
+
+private void initialize() throws WebServerException {
+   logger.info("Tomcat initialized with port(s): " + getPortsDescription(false));
+   synchronized (this.monitor) {
+      try {
+         addInstanceIdToEngineName();
+
+         Context context = findContext();
+         context.addLifecycleListener((event) -> {
+            if (context.equals(event.getSource()) && Lifecycle.START_EVENT.equals(event.getType())) {
+               // Remove service connectors so that protocol binding doesn't
+               // happen when the service is started.
+               removeServiceConnectors();
+            }
+         });
+
+         // Start the server to trigger initialization listeners
+         this.tomcat.start();
+
+         // We can re-throw failure exception directly in the main thread
+         rethrowDeferredStartupExceptions();
+
+         try {
+            ContextBindings.bindClassLoader(context, context.getNamingToken(), getClass().getClassLoader());
+         }
+         catch (NamingException ex) {
+            // Naming is not enabled. Continue
+         }
+
+         // Unlike Jetty, all Tomcat threads are daemon threads. We create a
+         // blocking non-daemon to stop immediate shutdown
+         startDaemonAwaitThread();
+      }
+      catch (Exception ex) {
+         stopSilently();
+         destroySilently();
+         throw new WebServerException("Unable to start embedded Tomcat", ex);
+      }
+   }
+}
+```
+
+在`startDaemonAwaitThread`中，会开启一个非守护线程执行`TomcatWebServer.this.tomcat.getServer().await()`操作，该方法会一直阻塞知道收到停机指令，从而保证tomcat中的线程池能持续监听http连接。
+
+```java
+private void startDaemonAwaitThread() {
+   Thread awaitThread = new Thread("container-" + (containerCounter.get())) {
+
+      @Override
+      public void run() {
+         TomcatWebServer.this.tomcat.getServer().await();
+      }
+
+   };
+   awaitThread.setContextClassLoader(getClass().getClassLoader());
+   awaitThread.setDaemon(false);
+   awaitThread.start();
+}
+```

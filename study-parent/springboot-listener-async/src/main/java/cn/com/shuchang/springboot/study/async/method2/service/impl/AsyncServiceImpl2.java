@@ -24,7 +24,7 @@ public class AsyncServiceImpl2 implements AsyncService, ApplicationContextAware 
 
     private ApplicationContext applicationContext;
 
-    //异步调用
+    //异步调用  
     @Override
     @Async
     public void invokeAsyncMethod() {

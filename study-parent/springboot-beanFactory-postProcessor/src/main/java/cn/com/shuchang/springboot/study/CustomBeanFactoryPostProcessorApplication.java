@@ -6,6 +6,7 @@
  */
 package cn.com.shuchang.springboot.study;
 
+import cn.com.shuchang.springboot.study.service.ContextLoadService;
 import cn.com.shuchang.springboot.study.service.UserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,5 +39,7 @@ public class CustomBeanFactoryPostProcessorApplication {
         logger.info(userServiceImpl.getName());
         logger.info(userServiceImpl.getDescription());
         logger.info(userServiceImpl.getComment());
+        ContextLoadService contextLoadService = (ContextLoadService)context.getBean("contextLoadService");
+        contextLoadService.apply();
     }
 }
