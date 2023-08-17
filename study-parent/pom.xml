@@ -28,6 +28,7 @@
         <module>springboot-lifecycle</module>
         <module>springboot-runners</module>
         <module>springboot-applicationContext-custom</module>
+        <module>springboot-condition-custom</module>
     </modules>
 
     <properties>
@@ -62,6 +63,10 @@
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
             <version>24.0-jre</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
         </dependency>
     </dependencies>
 
