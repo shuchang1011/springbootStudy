@@ -12,6 +12,9 @@ import org.springframework.context.Phased;
 import org.springframework.context.SmartLifecycle;
 
 /**
+ * 按照我的理解，lifecycle最大的作用就是在容器完成Bean的实例化后，在自定义的Lifecycle的实现中，通过组合的形式，获取到多个需要进行启动初始化操作的Bean
+ * 然后，在start方法中，去调用这些初始化启动的操作，或者在stop中触发销毁操作。
+ * SmartLifecycle相较于lifecycle更好的一点就是允许自定义设置是否自动触发start或stop
  * @author shuchang
  * @version 1.0
  * @date 2022/7/28 16:34

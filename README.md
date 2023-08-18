@@ -1960,7 +1960,7 @@ protected void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactor
 
 针对前者，我这边也给了一个案例，主要是提前装配并实例化了一些Bean
 
-代码见模块[springboot-applicationContext-custom]()
+代码见模块[springboot-applicationContext-custom](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-applicationContext-custom)
 
 代码中其他知识扩展点：
 
@@ -2018,7 +2018,7 @@ protected void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactor
   beanFactory.registerResolvableDependency(ApplicationContext.class, this);
   ```
 
-  在代码模块[springboot-applicationContext-custom]()的实现中，提供了以下案例：
+  在代码模块[springboot-applicationContext-custom](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-applicationContext-custom)的实现中，提供了以下案例：
 
   ```
   // 案例一：依赖注入的方式获取registerResolvableDependency注册的Bean
@@ -2041,7 +2041,7 @@ protected void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactor
 
   `SingletonBeanRegistry#registerSingleton()`通过指定的 name 将给定的对象作为单例Bean注册到容器中。**由于给定的 bean 是完全初始化好的，所以它不会执行任何初始化回调**。比如：`InitializingBean#afterPropertiesSet();`给定实例也不会收到任何销毁回调（如`DisposableBean`的销毁方法）。
 
-  在代码模块[springboot-applicationContext-custom]()的实现中，提供了以下案例：
+  在代码模块[springboot-applicationContext-custom](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-applicationContext-custom)的实现中，提供了以下案例：
 
   ```
   1.在自定义上下文的postProcessBeanFactory实现中，注册一个新的ABean的单例Bean对象；
@@ -2068,7 +2068,44 @@ protected void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactor
 
   - 实际完成了对其实现类中`postProcessBeanFactory`方法的调用，**在bean实例化前修改bean的属性**
 
+
+
 **注意：为什么不推荐去自定义实现`BeanDefinitionRegistryPostProcessor`实现新增、修改Bean定义呢？因为后续的ConfigurationClassPostProcessor已经为我们加载好了绝大多数的Bean定义，无需实现相关功能；而提供给我们自定义实现BeanFactoryPostProcessor去修改Bean定义就可以满足绝大部分功能了**
+
+------
+
+**修正：！！！**上面不应该说不推荐实现，而是说通过`ConfigurationClassPostProcessor`这个`BeanDefinitionRegistryPostProcessor`的实现，已经可以扫描加载通过`@Component`注解等注册的Bean了。如果说，**没有需要通过手动编码装配Bean对象的需求(也就是说，可能没法通过@Component达到要求，例如，需要加载classpath外的一些jar包，需要额外定义类加载器去加载，并注册成相关的Bean(但是感觉应该没有这样使用的))，且没有要求说是要在BeanFactoryPostProcessor中用到这个Bean的前提下**，就没有必要去自定义`BeanDefinitionRegistryPostProcessor`去注册Bean了。
+
+当然了，如果只是想要满足前面第一个需求，无论是在`BeanDefinitionRegistryPostProcessor`中，还是在`BeanFactoryPostProcessor`中，都能够达到同样的效果；如果说想要满足后面的第二个需求的话，那就需要实现`BeanDefinitionRegistryPostProcessor`来提前装配注册Bean了（我觉得也可以在自定义上下文的模式下，在`postProcessBeanFactory`中装配相关Bean，但是需要在`SpringApplication`中指定**applicationContext**；又或者说，在更前的时期，准备容器阶段，通过实现`ApplicationContextInitializer`，在初始化应用上下文时去装配相关的Bean，也能达到这样的目的）。
+
+这里，我提供一个使用`BeanDefinitionRegistryPostProcessor`的样例
+
+```java
+    @Override
+    public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) throws BeansException {
+        HighestLevel highestLevel = new HighestLevel();
+        LowestLevel lowestLevel = new LowestLevel();
+        registry.registerBeanDefinition("smartlifecycle-highest",
+            BeanDefinitionBuilder.genericBeanDefinition(HighestLevel.class, () -> highestLevel).getBeanDefinition());
+        registry.registerBeanDefinition("smartlifecycle-lowest",
+            BeanDefinitionBuilder.genericBeanDefinition(LowestLevel.class, () -> lowestLevel).getBeanDefinition());
+    }
+    
+    @Override
+    public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) throws BeansException {
+        //        beanFactory.registerSingleton("smartlifecycle-highest", new HighestLevel());
+        //        beanFactory.registerSingleton("smartlifecycle-lowest", new LowestLevel());
+        beanFactory.getBean("smartlifecycle-highest");
+        beanFactory.getBean("smartlifecycle-lowest");
+        logger.info("SmartLifeManager activated!");
+    }
+```
+
+
+
+------
+
+
 
 在调用BeanFactoryPostProcessors前，我们得清楚它的来源，主要有以下两点：
 
@@ -2440,12 +2477,23 @@ protected void processConfigurationClass(ConfigurationClass configClass) throws 
 `doProcessConfigurationClass()`方法中，执行流程如下:
 
 - (1) 处理内部类，如果内部类也是一个配置类(判断一个类是否是一个配置类，通过`ConfigurationClassUtils.checkConfigurationClassCandidate()`可以判断)。
+
 - (2) 处理属性资源文件，加了`@PropertySource`注解。
+
 - (3) 首先解析出类上的`@ComponentScan`和`@ComponentScans`注解，然后根据配置的扫描包路径，利用ASM技术(ASM技术是一种操作字节码的技术)扫描出所有需要交给Spring管理的类，获取这些@Component声明的组件类的bean definition，并将其装载到Bean工厂中的bean definition map中；由于扫描出的类中可能也被加了`@ComponentScan`和`@ComponentScans`注解，因此需要进行递归解析，直到所有加了这两个注解的类被解析完成。
+
+  - 注意：这里有个比较常用的扩展点，也就是对于`@Condition`注解的解析。
+
+    在加载`@Component`声明的Bean的定义文件时，会通过`conditionEvaluator.shouldSkip`来判断该Bean上是否应用`@Condition或其扩展注解`，且是否满足Condition条件。只有满足条件的Bean的定义文件才会被装配到BeanDefinitionMap中。
+
 - (4) 处理`@Import`注解。通过`@Import`注解，有三种方式可以将一个Bean注册到Spring容器中，分别是`ImportSelector`、`DeferredImportSelector`和`ImportSelectorRegistrar`
+
 - (5) 处理`@ImportResource`注解，解析配置文件。
+
 - (6) 处理加了`@Bean`注解的方法。
+
 - (7) 通过`processInterfaces()`处理接口的默认方法，从JDK8开始，接口中的方法可以有自己的默认实现，因此，如果这个接口中的方法也加了@Bean注解，也需要被解析。(很少用)
+
 - (8) 解析父类，如果被解析的配置类继承了某个类，那么配置类的父类也会被进行解析`doProcessConfigurationClass()`(父类是JDK内置的类例外，即全类名以java开头的)。
 
 关于第(7)步，举个例子解释下。如下代码示例，`AppConfig`类加了`Configuration`注解，是一个配置类，且实现了`AppConfigInterface`接口，这个接口中有一个默认的实现方法(JDK8开始，接口中的方法可以有默认实现)，该方法上添加了`@Bean`注解。这个时候，经过第(7)步的解析，会向spring容器中添加一个`InterfaceMethodBean`类型的bean。
@@ -2567,6 +2615,169 @@ protected final SourceClass doProcessConfigurationClass(
 		return null;
 	}
 ```
+
+###### 4.1@Condition解析原理
+
+`@Conditional`是由Spring提供的注解，可以按照一定的条件来约束Bean的注册。我们只需要往@Conditional注解中传入一个Class数组(对应Condition的实现类)，即可实现自定义规则来约束一系列Bean的注册。
+
+```java
+// 可以作用在类上，也可以作用在方法上
+@Target({ElementType.TYPE, ElementType.METHOD})
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+public @interface Conditional {
+    // 需要传入一个Class数组
+    Class<? extends Condition>[] value();
+}
+
+// 继承Condition接口
+@FunctionalInterface
+public interface Condition {
+    // var1为应用上下文，方便加载Bean或环境变量等；var2则是类的一些元数据等，包括类本身，成员变量，注解信息等。这里通常用来获取该注解声明中的一些变量信息等，来进行条件控制
+    boolean matches(ConditionContext var1, AnnotatedTypeMetadata var2);
+}
+```
+
+
+
+这里，我们提供一个样例，来演示自定义Conditional的使用
+
+```
+1.自定义一个Condition实现OperationSystemCondition，并在match实现中定义相关的条件来控制Bean的生成；
+2.自定义一个@Conditional注解@ConditionalOnOS，并在注解上引用@Contional(OperationSystemCondition.class)；这样，BeanFactory在加载注解时，就能扫描到对应的OperationSystemCondition；
+3.创建两个Bean实例：WindowsBean、LinuxBean。分别在两个类上声明@ConditionalOnOS注解，并指定不同的os；
+4.在启动类中，获取应用上下文，并尝试通过上下文获取3中创建的Bean实例；
+5.在启动的jvm参数中，指定os，从而控制Bean实例的创建
+```
+
+代码见模块[springboot-condition-custom](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-condition-custom)
+
+------
+
+在看完样例后，相信大家对Conditional的使用有了一定的了解。但是，仅仅会使用还不够，还需要明白其生效的原理。下面，我们就针对spring加载Condition的过程逐步进行分析。
+
+首先，从Condition的match方法入手，可以看到实际的调用是通过ConditionEvaluator的shouldSkip方法来触发的
+
+![image-20230817165456474](https://raw.githubusercontent.com/shuchang1011/images/main/img/image-20230817165456474.png)
+
+而`shouldSkip`是在何时触发的呢？主要在两个地方：`configurationClassPostProcessors`执行`processConfigBeanDefinition`过程中的**parse**解析阶段和**this.reader.loadBeanDefinitions(configClasses)**注册BeanDefinition阶段
+
+```java
+public void processConfigBeanDefinitions(BeanDefinitionRegistry registry) {
+    List<BeanDefinitionHolder> configCandidates = new ArrayList();
+    // 获取registry中定义的所有的bean的name
+    String[] candidateNames = registry.getBeanDefinitionNames();
+    ......
+    do {
+        // 第一个会调用shouldSkip的位置，这里是解析能够直接获取的候选配置bean。可能是Component，ComponentScan，Import，ImportResource或者有Bean注解的bean
+        StartupStep processConfig = this.applicationStartup.start("spring.context.config-classes.parse");
+        parser.parse(candidates);
+        parser.validate();
+        // 获取上面封装已经解析过的配置bean的ConfigurationClass集合
+        Set<ConfigurationClass> configClasses = new LinkedHashSet(parser.getConfigurationClasses());
+        // 移除前面已经处理过的
+        configClasses.removeAll(alreadyParsed);
+        if (this.reader == null) {
+            this.reader = new ConfigurationClassBeanDefinitionReader(registry, this.sourceExtractor, this.resourceLoader, this.environment, this.importBeanNameGenerator, parser.getImportRegistry());
+        }
+
+        //第二个会调用shouldSkip的位置，这里是加载configurationClasse中内部可能存在配置bean，比如方法上加了@Bean或者@Configuration标签的bean
+        this.reader.loadBeanDefinitions(configClasses);
+        alreadyParsed.addAll(configClasses);
+        ......
+    }
+}
+```
+
+在parse阶段，其最后执行`doProcessConfigurationClass`时，会扫描配置类，以及Component注解声明的Bean等时，会触发shouldSkip，并固定传递phase为`REGISTER_BEAN`的阶段；而`loadBeanDefinitions`第二次触发shouldSkip则是在将configClass转化成BeanDefinition，并注册到BeanFactory时触发的，此时，只是传递了相关的metadata，并未传递phase定义，固会根据默认的configClass类型来定义是哪个阶段。
+
+下面时对于shouldSkip执行过程的解析
+
+```java
+public boolean shouldSkip(@Nullable AnnotatedTypeMetadata metadata, @Nullable ConfigurationPhase phase) {
+		if (metadata == null || !metadata.isAnnotated(Conditional.class.getName())) {
+			return false;
+		}
+		// 根据当前对象的类型来决定phase阶段：PARSE_CONFIGURATION和REGISTER_BEAN；这两个时期，会影响后续遍历当前对象上引用的conditions的条件判断。Condition存在另一个扩展实现ConfigurationCondition，其声明了两个phase阶段PARSE_CONFIGURATION 和 REGISTER_BEAN：前者用于声明是否是出于解析配置类的阶段，后者则是声明是否处于解析Bean的注册文件的阶段。
+        //在ConfigurationClassPostProcessor在解析配置类以及Bean的注册文件时，会触发shouldSkip方法进行条件控制，并根据解析的对象类型，传入不同的phase阶段（解析配置类时传入前者，解析bean注册时传入后者）。
+    	//在后续遍历Condition时，对于ConfigurationCondition的实现，会通过getConfigurationPhase获取该注解生效的阶段，如果阶段和传入的阶段一致（代表该条件注解确实是在解析该类型对象时生效），才会触发condition的match方法进行条件过滤；否则，该条件注解直接失效，不会进行条件判断
+    	// 也就是说，当一个REGISTER_BEAN阶段的ConfigurationCondition实现的注解应用在配置类上时，在ConfigurationClassPostProcessor解析配置类这个阶段是不会生效的。
+    	// 但是，这不代表这个注解声明在配置类上就不会生效了！！！ConfigurationClassPostProcessor解析配置类后，需要将写入到ConfigurationMap中的所有configClass转化成BeanDefinition（在parse解析完后，会调用this.reader.loadBeanDefinitions(configClasses)），而这个阶段同样会触发条件过滤判断。此时就出于注册BeanDefinition阶段，而上面的REGISTER_BEAN阶段的ConfigurationCondition就会生效了。
+    	// 综上所述，不同阶段的ConfigurationCondition实现，只能控制在不同阶段是否生效。例如，REGISTER_BEAN在配置解析时不会生效，但后续解析出来的configClass转化成BeanDefinition时同样会生效！！
+		if (phase == null) {
+			if (metadata instanceof AnnotationMetadata &&
+					ConfigurationClassUtils.isConfigurationCandidate((AnnotationMetadata) metadata)) {
+				return shouldSkip(metadata, ConfigurationPhase.PARSE_CONFIGURATION);
+			}
+			return shouldSkip(metadata, ConfigurationPhase.REGISTER_BEAN);
+		}
+
+		List<Condition> conditions = new ArrayList<>();
+		for (String[] conditionClasses : getConditionClasses(metadata)) {
+			for (String conditionClass : conditionClasses) {
+				Condition condition = getCondition(conditionClass, this.context.getClassLoader());
+				conditions.add(condition);
+			}
+		}
+
+		AnnotationAwareOrderComparator.sort(conditions);
+
+    	// 遍历当前类上的所有条件注解
+    	// 非ConfigurationCondition的实现，直接调用match方法进行条件控制
+    	// ConfigurationCondition实现，则根据getConfigurationPhase定义的生效阶段和传入的生效阶段进行比对。比对一致，证明当前阶段为需要生效的阶段，则继续调用match方法，进行条件判断
+    	// 样例：OnBeanCondition,其返回的是REGISTER_BEAN，也就是只有注册Bean的定义文件时才能生效。也就是说，在解析配置类生成configClass时，这个注解是不会生效的，也就是说配置类能正常解析，但是后续配置类转化成BeanDefinition并注册到BeanFactory中时，会触发OnBeanCondition条件
+		for (Condition condition : conditions) {
+			ConfigurationPhase requiredPhase = null;
+			if (condition instanceof ConfigurationCondition) {
+				requiredPhase = ((ConfigurationCondition) condition).getConfigurationPhase();
+			}
+			if ((requiredPhase == null || requiredPhase == phase) && !condition.matches(this.context, metadata)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+
+// ConfigurationCondition定义
+public interface ConfigurationCondition extends Condition {
+
+	/**
+	 * Return the {@link ConfigurationPhase} in which the condition should be evaluated.
+	 */
+	ConfigurationPhase getConfigurationPhase();
+
+
+	/**
+	 * The various configuration phases where the condition could be evaluated.
+	 */
+	enum ConfigurationPhase {
+
+		PARSE_CONFIGURATION,
+
+		REGISTER_BEAN
+	}
+
+}
+
+```
+
+上述代码中提及的ConfigurationCondition相较于Condition只是多了个生效的阶段罢了（实际上match过滤方法终会调用，只是说是在解析配置类阶段**PARSE_CONFIGURATION**，还是说在注册BeanDefinition阶段**REGISTER_BEAN**）
+
+**注意：在不同的阶段中，调用match方法可能存在一定的问题。**
+
+例如，返回**PARSE_CONFIGURATION**的Condition的match实现中，尝试从BeanFactory中加载某个Bean时，如果这个Bean没有在`refresh阶段的invokeBeanFactoryPostProcessors`前(即`ConfigurationClassPostProcessor`扫描解析配置类前)注册到BeanFactory中，那么，此时尝试加载这个Bean就无法成功。
+
+因为，BeanFacrtory.getBean首先会尝试从容器中获取这个Bean，如果获取不到的话，则会尝试创建（从注册到BeanFactory中的BeanDefinition中查找，并创建相关Bean实例）。
+
+所以说，在`ConfigurationClassPostProcessor`扫描解析配置类的阶段，扫描到的一些Bean的定义文件此时还是以ConfigClass的状态保存，需要在`ConfigurationClassPostProcessor`执行完parse阶段后，通过`this.reader.loadBeanDefinitions(configClasses)`将其转化成BeanDefinition并注册到BeanFactory中
+
+这个我也提供了样例，便于理解，详见代码[springboot-condition-custom](https://github.com/shuchang1011/springbootStudy/tree/main/study-parent/springboot-condition-custom)模块的`ParseConfigurationConfig`和`RegisterBeanConfiguration`上声明的`ConfigurationCondition`实现
+
+------
+
+
 
 ###### 5.processImports--@Import注解解析及使用
 
@@ -4278,8 +4489,11 @@ protected void initMessageSource() {
 
 而springboot启动初始时，触发`listeners.starting();`注册的`initialMulticaster`是用于监听启动过程中的事件，然后传播到其他的监听器.
 
+注意：这里存在一个扩展点，可以自定义实现一个名为applicationEventMulticaster的Bean,从而实现ApplicationEventMulticaster配置项的自定义
+
 ```java
 // 获取BeanFactory中beanDefinition，若已注册名为applicationEventMulticaster的ApplicationEventMulticaster,则直接获取，否则创建一个新的SimpleApplicationEventMulticaster
+// 故这里存在一个扩展点，可以自定义实现一个名为applicationEventMulticaster的Bean,从而实现ApplicationEventMulticaster配置项的自定义
 protected void initApplicationEventMulticaster() {
     ConfigurableListableBeanFactory beanFactory = getBeanFactory();
     if (beanFactory.containsLocalBean(APPLICATION_EVENT_MULTICASTER_BEAN_NAME)) {
@@ -4912,6 +5126,10 @@ private void startBeans(boolean autoStartupOnly) {
 
 ###### Lifecycle & SmartLifecycle使用
 
+```
+按照我的理解，lifecycle&smartLifecycle最大的作用就是在容器完成Bean的实例化后，在自定义的Lifecycle的实现中，通过组合的形式，获取到多个需要进行启动初始化操作的Bean。例如自定义一个manager管理器，注入ApplicationContext上下文，然后就可以获取到需要的Bean，并执行相关的启动操作，或者销毁操作
+```
+
 这里我们主要演示Lifecycle和SmartLifecycle的使用以及二者的区别
 
 1.定义Lifecycle和smartLifecycle的实现
@@ -5397,6 +5615,8 @@ private void callRunners(ApplicationContext context, ApplicationArguments args) 
 ```
 
 从上述代码来看，spring上下文会在启动完成后，从IOC工厂中获取`ApplicationRunner`和`CommandLineRunner`类型的Bean，并触发其run方法的实现。因此，开发人员想要在应用启动完成后执行一些操作的话，只需要实现`ApplicationRunner`和`CommandLineRunner`接口，并将其声明为Bean即可。
+
+**注意：这些Runner是在启动线程这个主线程同步执行的，如果存在多个Runner自循环调用，就会导致部分Runner不生效（实际上是根本就没有运行到那个Runner）！！！**
 
 ##### ApplicationRunner & CommandLineRunner使用
 
